@@ -1,0 +1,125 @@
+# run_heloco.py config: run one or more decentralized training methods (HeLoCo, DiLoCo, etc.)
+# sequentially on the same dataset, with metrics and comparison plots.
+#
+# Usage:
+#   python run_heloco.py                    # reads this file automatically
+#   python run_heloco.py --methods heloco,diloco --steps 50  # CLI overrides
+#
+# Every key is a run_heloco.py option (underscored). Any flag typed on the command line
+# overrides values here. Remove/comment a key to fall back to the default.
+
+# ================================================================ METHODS & COMPARISON
+# List of decentralized training methods to run, one after another.
+# Each gets its own subdirectory in log_dir with independent logs and metrics.
+# A combined comparison_loss.png plot is generated at the end.
+#
+# Available: heloco, diloco, mla
+methods: [heloco, mla, diloco]
+
+# ================================================================ TOPOLOGY
+islands: 2              # number of workers (trainer replicas) per method
+gpus_per_island: 2      # GPUs per worker; FSDP-sharded inside each island
+gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
+
+# ================================================================ MODEL & RECIPE
+# IMPORTANT: `module` MUST be prefixed with "models." (e.g. "models.llama3_small",
+# NOT "llama3_small"). Without the prefix, torchtitan treats the name as a
+# built-in shorthand and silently loads ITS OWN model registry instead of ours
+# -- which lacks the fault_tolerance/semi_sync support this launcher needs, and
+# will fail with "Unrecognized options: --fault_tolerance.*" or a missing config.
+#
+# Pick ONE (module, config, hf_assets) triple below by uncommenting it.
+# All models.llama3_small.* flavors use the built-in 2048-vocab debug tokenizer
+# (no download needed -- training is from scratch, not fine-tuning real weights).
+#
+#   module: models.llama3_small   config: llama3_15m    ~13.6M params  (fastest, default)
+#   module: models.llama3_small   config: llama3_500m   ~453.6M params
+#   module: models.llama3_small   config: llama3_1b     ~940.7M params
+#   module: models.llama3_small   config: llama3_4b     ~3.65B params  (needs more VRAM)
+#
+# Real pretrained-tokenizer options (need matching assets under ./assets/hf/):
+#   module: models.qwen3          config: qwen3_0_6b    ~0.6B params  (assets/hf/Qwen3-0.6B, present)
+#   module: models.qwen3          config: qwen3_1_7b    ~1.7B params  (needs assets/hf/Qwen3-1.7B, NOT downloaded)
+#   module: models.llama3         config: llama3_8b     ~8B params    (needs assets/hf/Llama-3.1-8B, NOT downloaded)
+#
+# See models/<module_without_prefix>/config_registry.py for the exact preset body.
+module: models.llama3_small
+config: llama3_1b
+
+# Model assets: tokenizer (+ optional pretrained checkpoint). Must match the
+# config chosen above -- see the table next to `config:` for the right pairing.
+hf_assets: ./assets/tokenizer/debug
+
+# ================================================================ TRAINING PARAMETERS
+dataset: c4             # torchtitan dataset name (streams from HF Hub)
+steps: 400              # inner training steps per island
+seq_len: 512            # sequence length
+batch: 8                # local batch size per GPU rank
+
+# ================================================================ DATA DISTRIBUTION
+# data_distribution: iid, non_iid, or both
+# - iid:      all islands see same language (C4 English, default, IID data)
+# - non_iid:  each island sees different language(s) from C4
+# - both:     run IID first, then non_iid sequentially
+#
+# For non_iid/both mode, specify one language per island.
+# Available C4 languages: english, french, german, spanish, italian, portuguese,
+#                         romanian, dutch, greek, czech, polish, hungarian,
+#                         croatian, swedish, finnish, danish, bulgarian, lithuanian,
+#                         slovene, slovak, irish, maltese
+#
+data_distribution: both  # or: iid, non_iid, both
+languages: [english, french]  # per-island languages (only used if non_iid/both)
+
+# ================================================================ ASYNC COORDINATION
+# Coordination method: sync (torchft barrier) or async (HTTP push/pull)
+# - sync:  window-synchronous with torchft semi_sync_method=heloco (staleness=0)
+# - async: fully asynchronous via AsyncDiLoCoServer/HeLoCoServer with staleness weighting
+coordination_method: async    # or: async
+async_interval: 1            # check staleness every N window pulses (async only)
+max_wait_time: 0.0           # max seconds to wait for server response; 0.0 = no timeout
+
+# ================================================================ DECENTRALIZED TRAINING
+# These settings apply to ALL methods. They can be varied per-method by modifying
+# the code or running separate config files.
+
+# HeLoCo / DiLoCo / MLA window
+sync_steps: 50          # window H: inner steps between pushes to parameter server
+num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole model)
+
+# ================================================================ HETEROGENEITY SIMULATION
+# Simulate heterogeneous (different-speed) islands for testing straggler robustness.
+# One factor per island, same order as `gpus`/`languages`.
+# Default: null -> [1.0, 1.0, ...] (all islands same speed, no artificial delay)
+# Example: [1, 5, 3, 14] means island 0 is normal, 1 is 5x slower, 2 is 3x slower, 3 is 14x slower
+# Mechanism: run_heloco.py exports $PF_ISLAND_SLOWNESS_FACTOR per island (torchtitan's
+# fault_tolerance config has no such flag), and panoengine's AsyncDiLoCo worker
+# (panoengine/decentralized/async_diloco.py) sleeps extra time proportional to
+# (factor - 1) after every inner optimizer step.
+island_slowness_factors: [1, 1.5] #, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
+#island_slowness_factors: null
+
+# Server-side outer optimizer (HeLoCo, DiLoCo, MLA)
+outer_lr: 0.7           # outer learning rate (HeLoCoOptimizer / MLAOptimizer)
+outer_momentum: 0.9     # momentum
+rho: null               # HeLoCo arrival weight; null -> auto (1/sqrt(islands))
+should_quantize: false  # int8 pseudo-gradient upload (reduces comm)
+
+# MLA uses only: outer_lr, outer_momentum
+# MLA = simple momentum look-ahead on server: m <- γ·m + (1−γ)·Δ, θ <- θ − lr·(γ·m + Δ)
+# No direction correction for base MLA (that's SmartDCMLA_v2, a separate advanced variant)
+
+# ================================================================ INFRASTRUCTURE
+host: 127.0.0.1
+lighthouse_port: 29510  # rendezvous server port
+ps_port: 29520          # parameter server port
+rdzv_base_port: 29600   # island i rendezvous on rdzv_base_port + i
+log_dir: outputs/heloco_run   # base directory; will be expanded to:
+                              # outputs/heloco_run_{coordination_method}_{config}_{data_distribution}_{steps}
+                              # Example: outputs/heloco_run_sync_qwen3_0_6b_iid_100
+                              # Set custom value to disable this behavior
+ps_timeout: 600         # seconds to wait for parameter server to announce addresses
+
+# Extra torchtitan flags appended to every island's torchrun, e.g.
+# [\"--metrics.log_freq=5\", \"--training.max_norm=1.0\"]
+extra: []

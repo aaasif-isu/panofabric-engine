@@ -51,6 +51,7 @@ from panoengine.decentralized.async_diloco import (
     DelayedNesterovOptimizer,
 )
 from panoengine.decentralized.heloco import HeLoCoOptimizer, HeLoCoServer
+from panoengine.decentralized.mla import MLAOptimizer, MLAServer
 
 from panoengine.decentralized.relay import (
     build_manifest,
@@ -99,7 +100,7 @@ def build_server(
 ):
     """Build the parameter server around an unsharded CPU model.
 
-    Both outer optimizers share the same wire protocol, so workers are identical
+    All outer optimizers share the same wire protocol, so workers are identical
     regardless of choice:
       - ``heloco``: HeLoCo -- direction-aware, heterogeneity-aware staleness
         correction of each pseudo-gradient. ``rho`` is its arrival weight
@@ -108,6 +109,8 @@ def build_server(
       - ``diloco``: plain async DiLoCo with Delayed-Nesterov momentum
         (``nesterov_period`` controls how often the momentum correction applies;
         set >= number of workers).
+      - ``mla``: MLA (Momentum Look-Ahead) -- simple momentum accumulation on
+        server side (no direction correction or look-ahead initialization).
     """
     model = model.to(device="cpu", dtype=torch.float32)
     extra_kwargs = {}
@@ -147,8 +150,13 @@ def build_server(
             nesterov_period=nesterov_period,
         )
         server_cls = AsyncDiLoCoServer
+    elif outer_method == "mla":
+        if rho is not None:
+            raise ValueError("rho is HeLoCo's arrival weight; mla has none")
+        outer = MLAOptimizer(model.parameters(), lr=lr, momentum=momentum)
+        server_cls = MLAServer
     else:
-        raise ValueError(f"unknown outer_method {outer_method!r} (heloco|diloco)")
+        raise ValueError(f"unknown outer_method {outer_method!r} (heloco|diloco|mla)")
 
     return server_cls(
         model,
@@ -624,7 +632,7 @@ def main() -> None:
         "heloco_async_inference hub, publishing checkpoints to the relay)"
     )
     parser.add_argument(
-        "--outer_method", choices=["heloco", "diloco"], default="heloco"
+        "--outer_method", choices=["heloco", "diloco", "mla"], default="heloco"
     )
     parser.add_argument("--lr", type=float, default=0.7)
     parser.add_argument("--momentum", type=float, default=0.9)

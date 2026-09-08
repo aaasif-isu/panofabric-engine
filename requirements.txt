@@ -1,0 +1,77 @@
+# =============================================================================
+# panofabric-engine requirements
+# =============================================================================
+# This file documents the Python dependencies used by panofabric-engine.
+# It is NOT a pip-installable file — this project uses `uv` with `pyproject.toml`
+# and the Makefile for actual dependency resolution. See README.md for setup.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Build system
+# ---------------------------------------------------------------------------
+setuptools>=61
+
+# ---------------------------------------------------------------------------
+# Core project (installed from source, not PyPI)
+#   $ pip install -e .
+# ---------------------------------------------------------------------------
+# panofabric-engine  (this repo itself)
+
+# ---------------------------------------------------------------------------
+# Core ML / DL stack (installed via Makefile, not declared in pyproject.toml)
+# ---------------------------------------------------------------------------
+# torch              — PyTorch (nightly, backend-matched; installed LAST)
+# vllm               — vLLM for serving plane (pinned nightly, CUDA-only)
+
+# ---------------------------------------------------------------------------
+# [train] extra — training engine
+# ---------------------------------------------------------------------------
+torchft @ git+https://github.com/PanocularAI/torchft.git@edad86ca1c8a95195961e555cf0ab3982bb860f7
+torchtitan @ git+https://github.com/PanocularAI/torchtitan.git@1ec4992a207dc317433ed3f014caf782b2a3dd98
+transformers
+
+# ---------------------------------------------------------------------------
+# [serve] extra — serving plane
+# ---------------------------------------------------------------------------
+aiohttp>=3.9
+huggingface_hub
+numpy
+safetensors
+# transformers (already listed above)
+
+# ---------------------------------------------------------------------------
+# [serve-vllm] extra
+# ---------------------------------------------------------------------------
+# vllm (installed separately with its matched torch; see Makefile)
+
+# ---------------------------------------------------------------------------
+# [rl] runtime (installed via `make install-rl`, CUDA-only)
+# ---------------------------------------------------------------------------
+# torchvision
+# vllm
+# torchmonarch
+# renderers
+# pygtrie
+# portpicker
+# math-verify
+# torchstore
+# flash-attn-3
+
+# ---------------------------------------------------------------------------
+# Script-level / tooling dependencies (not in pyproject.toml)
+# ---------------------------------------------------------------------------
+# Matplotlib is used by generate_plots.py and heloco plotting; it is optional
+# and skipped gracefully when not present.
+# matplotlib
+
+# PyYAML is used by run_heloco.py to read heloco.yaml config files.
+# It is a torchtitan transitive dependency, always present in the venv.
+# pyyaml
+
+# datasets is used by the sft_tool_qwen example.
+# datasets
+
+# ---------------------------------------------------------------------------
+# Test dependencies
+# ---------------------------------------------------------------------------
+# pytest  (configured in pyproject.toml [tool.pytest.ini_options])

@@ -1,0 +1,256 @@
+================================================================================
+          YOUR DISTRIBUTED TRAINING SETUP - COMPLETE EXPLANATION
+================================================================================
+
+CONFIG SUMMARY:
+  islands: 2              ← 2 independent workers
+  gpus_per_island: 2      ← Each worker uses 2 GPUs
+  gpus: [0, 1, 2, 3]      ← Total 4 GPUs
+  batch: 8                ← 8 samples per step
+  steps: 100              ← 100 training iterations
+  sync_steps: 20          ← Coordinate every 20 steps
+  data_distribution: non_iid
+  languages: [english, french]
+
+================================================================================
+HARDWARE LAYOUT
+================================================================================
+
+Your Physical Machine:
+  4 GPUs (GPU 0, 1, 2, 3) connected by PCIe/NVLink
+
+Logical Organization:
+
+  ISLAND 1 (Worker 1)           ISLAND 2 (Worker 2)
+  ┌──────────────────┐          ┌──────────────────┐
+  │ GPU 0 (Rank 0)   │          │ GPU 2 (Rank 0)   │
+  │ Shard 1 of Model │          │ Shard 1 of Model │
+  └──────────────────┘          └──────────────────┘
+  ┌──────────────────┐          ┌──────────────────┐
+  │ GPU 1 (Rank 1)   │          │ GPU 3 (Rank 1)   │
+  │ Shard 2 of Model │          │ Shard 2 of Model │
+  └──────────────────┘          └──────────────────┘
+
+  [Fast NVLink]                 [Fast NVLink]
+        ↓                              ↓
+   FSDP Sync                      FSDP Sync
+   (within island)                (within island)
+        ↑                              ↑
+        └──────────┬────────────────┬──┘
+                   │ Slow Network  │
+                   │ (TCP/Ethernet)│
+                   ↓
+            Parameter Server
+            (every 20 steps)
+
+================================================================================
+WHAT IS FSDP?
+================================================================================
+
+FSDP = Fully Sharded Data Parallel
+
+Inside Island 1:
+  - Model is too big for one GPU
+  - Split model across GPU 0 and GPU 1
+  - GPU 0: Layers 1-8 (Shard 1)
+  - GPU 1: Layers 9-16 (Shard 2)
+  - Both GPUs process SAME batch (8 samples)
+  - GPU 0 processes samples 0-3, GPU 1 processes 4-7
+  - They sync after each forward pass (FAST - NVLink)
+  
+Benefit: Use 2 GPUs to fit larger model
+Speed: NVLink (fast, local connection)
+
+================================================================================
+WHAT IS HELOCO/DILOCO (DECENTRALIZED)?
+================================================================================
+
+Trains on EACH ISLAND independently:
+
+Step 1-20:
+  Island 1: Train on English data (GPU 0+1)
+  Island 2: Train on French data (GPU 2+3)
+  Both in PARALLEL - no communication
+  
+Step 20: SYNCHRONIZATION
+  Island 1: "Here are my gradients from English"
+  Island 2: "Here are my gradients from French"
+  Server: "Combine and update both models"
+  Both: Download new model
+  
+Step 21-40:
+  Island 1: Train with updated model on English
+  Island 2: Train with updated model on French
+  Both in PARALLEL again
+  
+Advantage: Only communicate every 20 steps, not every step!
+          Reduces network overhead significantly
+
+================================================================================
+THREE LEVELS OF SYNCHRONIZATION
+================================================================================
+
+1. WITHIN GPU (Not applicable - single GPU)
+   └─ N/A
+
+2. WITHIN ISLAND (GPU 0 ↔ GPU 1 or GPU 2 ↔ GPU 3)
+   └─ FSDP: After each forward/backward pass
+   └─ Speed: FAST (NVLink)
+   └─ Every step
+
+3. BETWEEN ISLANDS (Island 1 ↔ Island 2 ↔ Server)
+   └─ HeLoCo/DiLoCo: After sync_steps (every 20 steps)
+   └─ Speed: SLOW (Ethernet)
+   └─ Only every 20 steps (not 20 times per step!)
+
+================================================================================
+TRAINING FLOW EXAMPLE
+================================================================================
+
+Step 1:
+  ┌─ Island 1 ─────────────────────┬─ Island 2 ─────────────────────┐
+  │ 1. Load batch [English data]    │ 1. Load batch [French data]    │
+  │ 2. GPU 0 forward: shard 1       │ 2. GPU 2 forward: shard 1      │
+  │ 3. GPU 1 forward: shard 2       │ 3. GPU 3 forward: shard 2      │
+  │ 4. [FSDP sync within island]    │ 4. [FSDP sync within island]   │
+  │ 5. GPU 0 backward               │ 5. GPU 2 backward              │
+  │ 6. GPU 1 backward               │ 6. GPU 3 backward              │
+  │ 7. [FSDP sync within island]    │ 7. [FSDP sync within island]   │
+  │ 8. Optimizer step                │ 8. Optimizer step              │
+  └────────────────────────┬────────┴─────────────────────┬────────┘
+                           │                             │
+                    No network communication yet!
+
+Steps 2-20: Repeat step 1 (20 times total)
+
+After Step 20:
+  Island 1 Gradients ──┐
+                       ├─→ Parameter Server (Central)
+  Island 2 Gradients ──┘
+                       ↓
+            Aggregate & Compute New Model
+                       ↓
+         Downloaded by both islands
+
+Steps 21-40: Repeat steps 1-20 with updated model
+
+================================================================================
+YOUR EVALUATION LOG
+================================================================================
+
+With steps=100, sync_steps=20:
+
+Evaluation records are taken ONLY at sync points:
+
+  Step 20  ← Checkpoint 1 ✓
+  Step 40  ← Checkpoint 2 ✓
+  Step 60  ← Checkpoint 3 ✓
+  Step 80  ← Checkpoint 4 ✓
+  Step 100 ← Checkpoint 5 ✓
+
+NOT recorded (only local training, no sync):
+  Steps 1-19, 21-39, 41-59, 61-79, 81-99
+
+Why? Because:
+  - During 1-19: Islands training independently
+  - Only sync at 20: Get loss/perplexity
+  - Then train 21-39: Independent again
+  - Only sync at 40: Record loss/perplexity
+  - And so on...
+
+Result per method:
+  - diloco: 5 records (steps 20, 40, 60, 80, 100)
+  - heloco: 5 records (steps 20, 40, 60, 80, 100)
+  - mla: 5 records (steps 20, 40, 60, 80, 100)
+  Total: 15 records per island
+  
+With 2 islands: 30 total records
+
+================================================================================
+BATCH SIZE BREAKDOWN
+================================================================================
+
+batch: 8
+
+During Each Step:
+  Island 1:
+    GPU 0 processes: samples [0-3]
+    GPU 1 processes: samples [4-7]
+    Total batch: 8
+    
+  Island 2:
+    GPU 2 processes: samples [0-3] (different data - French)
+    GPU 3 processes: samples [4-7] (different data - French)
+    Total batch: 8
+
+Each GPU sees 4 samples but they're different for each island
+(because non_iid: Island 1 = English, Island 2 = French)
+
+================================================================================
+COMMUNICATION EFFICIENCY
+================================================================================
+
+CENTRALIZED APPROACH (standard):
+  Every step: Send gradients to server
+  100 steps = 100 communications
+  Network utilization: 100x
+  
+DECENTRALIZED APPROACH (HeLoCo/DiLoCo/MLA):
+  Every 20 steps: Send gradients to server  
+  100 steps = 5 communications
+  Network utilization: 5x
+  
+REDUCTION: 95% less network traffic! ✅
+TRADE-OFF: Slight staleness (islands use slightly outdated weights)
+           But often negligible with proper sync_steps tuning
+
+================================================================================
+QUICK Q&A
+================================================================================
+
+Q: Does each island run on separate machines?
+A: No, both islands on same machine (4 GPUs total)
+   In production, islands would be on different machines
+
+Q: Do GPU 0 and GPU 1 always have the same data?
+A: Yes, within island they process same batch (different samples)
+   But Island 1 sees English, Island 2 sees French
+
+Q: Is synchronization automatic?
+A: Yes, handled by HeLoCo/DiLoCo/MLA middleware
+   You don't need to code it
+
+Q: Can I change sync_steps?
+A: Yes! Adjust sync_steps in heloco.yaml
+   Smaller = more communication (slower)
+   Larger = less communication but more stale (bad convergence)
+   Default 20 is usually good
+
+Q: Why 2 islands if I have 4 GPUs?
+A: Flexibility! You could do:
+   - 1 island × 4 GPUs (pure FSDP, no decentralized sync)
+   - 2 islands × 2 GPUs (recommended, tests decentralized learning)
+   - 4 islands × 1 GPU each (simulate multi-machine)
+
+Q: What's non_iid data?
+A: Non-Independent-Identical-Distribution
+   Island 1 sees English only
+   Island 2 sees French only
+   More realistic federated learning scenario
+   (vs IID: all islands see same language)
+
+================================================================================
+SUMMARY
+================================================================================
+
+Your setup demonstrates DECENTRALIZED LEARNING:
+  ✓ 2 independent workers (islands)
+  ✓ Each has 2 GPUs for model sharding (FSDP)
+  ✓ Train independently for sync_steps (20)
+  ✓ Synchronize at checkpoints
+  ✓ Repeat
+
+Benefit: Test HeLoCo, DiLoCo, MLA on single machine
+Scales: In production, each island → different machine
+
+================================================================================

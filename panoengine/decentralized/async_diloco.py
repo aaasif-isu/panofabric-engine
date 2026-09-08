@@ -1586,6 +1586,32 @@ class AsyncDiLoCo:
             wire_bf16 = os.environ.get("PF_WIRE_BF16", "1").strip().lower() not in (
                 "0", "false", "off")
         self._wire_bf16 = wire_bf16
+        # Heterogeneity simulation: artificial per-step slowdown for this
+        # island, e.g. to study straggler robustness. 1.0 (default) = no
+        # slowdown. Set via $PF_ISLAND_SLOWNESS_FACTOR (run_heloco.py
+        # exports this per-island from heloco.yaml's island_slowness_factors;
+        # there is no torchtitan CLI flag for it -- fault_tolerance's config
+        # dataclass does not have one, so this must travel as an env var,
+        # same as ISLAND_LANGUAGE / PF_WIRE_BF16 above).
+        try:
+            self._slowness_factor: float = float(
+                os.environ.get("PF_ISLAND_SLOWNESS_FACTOR", "1.0")
+            )
+        except ValueError:
+            self._slowness_factor = 1.0
+        if self._slowness_factor < 0:
+            self._slowness_factor = 1.0
+        # Timestamp of the previous inner step's completion, for the
+        # per-step sleep in _step_post_hook. Must be set here (not via a
+        # getattr(..., default=time.monotonic()) at first-hook-call time):
+        # Python evaluates a binary subtraction's LEFT operand before its
+        # RIGHT operand, so `time.monotonic() - getattr(self, "_x",
+        # time.monotonic())` calls monotonic() for the left side first and
+        # for the getattr's default second -- the default ends up LARGER
+        # than the left term on the very first call, yielding a negative
+        # step_seconds and crashing time.sleep() with "sleep length must be
+        # non-negative". Initializing eagerly avoids the footgun entirely.
+        self._last_step_end: float = time.monotonic()
         self._server_bf16 = False
         # Delta downloads ride the same knob as bf16 (wire_bf16=False means a
         # bitwise-fp32 wire, full stop). _have_baseline flips once
@@ -1885,6 +1911,21 @@ class AsyncDiLoCo:
         _args: Tuple[Any, ...],
         _kwargs: Dict[str, Any],
     ) -> None:
+        # Heterogeneity simulation: sleep extra time proportional to
+        # (slowness_factor - 1) on every inner step, so a factor of 5.0
+        # makes this island take ~5x as long per step as factor=1.0,
+        # independent of how fast the real forward/backward/optimizer
+        # step happened to be. _last_step_end is set unconditionally in
+        # __init__, so step_seconds is always well-defined here (never
+        # negative from a first-call race -- see __init__ for why that
+        # matters).
+        now = time.monotonic()
+        if self._slowness_factor > 1.0:
+            step_seconds = max(0.0, now - self._last_step_end)
+            time.sleep(step_seconds * (self._slowness_factor - 1.0))
+            now = time.monotonic()
+        self._last_step_end = now
+
         self._local_step += 1
         # Fragment mode shortens the boundary cadence: one fragment syncs per
         # sync_every/P window, so a full rotation still moves the whole model

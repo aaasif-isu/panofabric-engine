@@ -37,3 +37,7 @@ Sessionx.vim
 
 # macOS dir files
 .DS_Store
+
+# venv (local virtual environment)
+heloco/
+.venv/
