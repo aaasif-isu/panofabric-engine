@@ -154,6 +154,11 @@ def parse_args() -> argparse.Namespace:
     # Hidden option: only for heloco.yaml config file (no CLI argument exposed)
     p.add_argument("--island-slowness-factors", default=None, nargs="+", type=float, 
                    help=argparse.SUPPRESS)  # Hidden from help
+    
+    # Reproducibility
+    repro = p.add_argument_group("reproducibility")
+    repro.add_argument("--seed", type=int, default=42,
+                      help="Random seed for Python, NumPy, PyTorch, dataloader shuffling (default: 42)")
 
     args = p.parse_args()
     
@@ -351,6 +356,7 @@ def trainer_env(args, island: int, gpus: list[int], ps_addr: str, hb_addr: str) 
         "PYTHONSAFEPATH": "1",
         "PYTORCH_ALLOC_CONF": "expandable_segments:True",
         "LOG_RANK": "0",
+        "PANOENGINE_SEED": str(args.seed),
     }
     
     # For non-IID data distribution, set language for this island
@@ -514,8 +520,9 @@ def export_metrics(log_dir: Path, islands: int, data_distribution: str = "iid",
     model_suffix = f"_{model_name}" if model_name else ""
     file_suffix = f"{mode_suffix}{model_suffix}"
     
-    lines = [f"{'island':<10}{'steps':>6}{'first_loss':>12}{'last_loss':>11}"
-             f"{'min_loss':>10}{'last_ppl':>10}{'exchanges':>11}"]
+    lines = [f"{'island':<10}{'steps':>6}{'first_step_loss':>16}"
+             f"{'last_step_loss':>15}{'min_loss':>10}{'last_ppl':>10}{'exchanges':>11}"]
+    island_data: dict[int, list[dict]] = {}
     for i in range(islands):
         log_path = log_dir / f"island-{i}.log"
         if not log_path.exists():
@@ -523,20 +530,22 @@ def export_metrics(log_dir: Path, islands: int, data_distribution: str = "iid",
         steps, comms = _parse_pfmetrics(log_path)
         _write_csv(out / f"island-{i}_steps{file_suffix}.csv", steps, _STEP_COLUMNS)
         _write_csv(out / f"island-{i}_comm{file_suffix}.csv", comms, _COMM_COLUMNS)
+        island_data[i] = steps
         if not steps:
-            lines.append(f"island-{i:<4}{0:>6}{'-':>12}{'-':>11}{'-':>10}{'-':>10}{len(comms):>11}")
+            lines.append(f"island-{i:<4}{0:>6}{'-':>16}{'-':>15}{'-':>10}{'-':>10}{len(comms):>11}")
             continue
         losses = [s["loss_metrics/global_avg_loss"] for s in steps]
         lines.append(
-            f"island-{i:<4}{len(steps):>6}{losses[0]:>12.4f}{losses[-1]:>11.4f}"
+            f"island-{i:<4}{len(steps):>6}{losses[0]:>16.4f}{losses[-1]:>15.4f}"
             f"{min(losses):>10.4f}{_math.exp(losses[-1]):>10.2f}{len(comms):>11}"
         )
         _plot_island(steps, out / f"island-{i}_loss{file_suffix}.png")
     summary = "\n".join(lines)
-    (out / "summary{file_suffix}.txt").write_text(summary + "\n")
+    (out / f"summary{file_suffix}.txt").write_text(summary + "\n")
     print("\n== metrics summary (loss = cross-entropy, ppl = exp(loss))")
     print(summary)
     print(f"== per-step CSVs & plots saved to: {out}/")
+    return island_data
 
 
 def _plot_island(steps: list[dict], png_path: Path) -> None:
@@ -673,8 +682,8 @@ def _create_evaluation_log(methods_data: dict[str, list[list[dict]]], log_path: 
                 
                 f.write(f"Method: {method}\n")
                 f.write(f"  Records: {len(method_records)}\n")
-                f.write(f"  First Loss: {first_loss:.6f} (PPL: {first_ppl:.6f})\n")
-                f.write(f"  Last Loss:  {last_loss:.6f} (PPL: {last_ppl:.6f})\n")
+                f.write(f"  First Checkpoint Loss: {first_loss:.6f} (PPL: {first_ppl:.6f})\n")
+                f.write(f"  Last Checkpoint Loss:  {last_loss:.6f} (PPL: {last_ppl:.6f})\n")
                 f.write(f"  Loss improvement: {first_loss - last_loss:.6f}\n")
                 f.write(f"  PPL improvement: {first_ppl - last_ppl:.6f}\n")
                 f.write("\n")
@@ -765,13 +774,262 @@ def print_dry_run(args, gpus: list[int]) -> None:
 
 
 
+# --------------------------------------------------------- plotting functions
+def _plot_per_island_comparison(all_training_losses: list[dict], metrics_dir: Path, methods: list[str], islands: int) -> None:
+    """Plot comparison of loss curves per island across methods."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+    
+    from collections import defaultdict
+    
+    # Group losses by island and method
+    island_method_data = defaultdict(lambda: defaultdict(list))
+    for record in all_training_losses:
+        island = record['island_id']
+        method = record['method']
+        try:
+            step = int(record['step'])
+            loss = float(record['loss'])
+            island_method_data[island][method].append((step, loss))
+        except (ValueError, KeyError):
+            pass
+    
+    # Plot one figure per island
+    for island in range(islands):
+        if island not in island_method_data or not island_method_data[island]:
+            continue
+        
+        fig, ax = plt.subplots(figsize=(10, 5))
+        colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+        
+        for color_idx, method in enumerate(methods):
+            if method not in island_method_data[island]:
+                continue
+            
+            data = sorted(island_method_data[island][method], key=lambda x: x[0])
+            steps = [d[0] for d in data]
+            losses = [d[1] for d in data]
+            
+            color = colors[color_idx % len(colors)]
+            ax.plot(steps, losses, linewidth=1.5, label=method, color=color)
+        
+        ax.set_xlabel("Step", fontsize=11)
+        ax.set_ylabel("Training Loss", fontsize=11)
+        ax.set_title(f"Island {island} - Training Loss Comparison", fontsize=12, fontweight="bold")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=10)
+        
+        plt.tight_layout()
+        png_path = metrics_dir / f"island-{island}_loss_comparison.png"
+        plt.savefig(png_path, dpi=100, bbox_inches="tight")
+        plt.close()
+
+
+def _plot_average_loss_curves(all_training_losses: list[dict], metrics_dir: Path, methods: list[str]) -> None:
+    """Plot average loss curves across islands for each method."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+    
+    from collections import defaultdict
+    
+    # Group losses by method and step (average across islands)
+    method_step_data = defaultdict(lambda: defaultdict(list))
+    for record in all_training_losses:
+        method = record['method']
+        try:
+            step = int(record['step'])
+            loss = float(record['loss'])
+            method_step_data[method][step].append(loss)
+        except (ValueError, KeyError):
+            pass
+    
+    # Calculate averages
+    method_avg = {}
+    for method in methods:
+        avg_steps = []
+        avg_losses = []
+        for step in sorted(method_step_data[method].keys()):
+            losses = method_step_data[method][step]
+            avg_loss = sum(losses) / len(losses)
+            avg_steps.append(step)
+            avg_losses.append(avg_loss)
+        method_avg[method] = (avg_steps, avg_losses)
+    
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    
+    for color_idx, method in enumerate(methods):
+        if method not in method_avg:
+            continue
+        steps, losses = method_avg[method]
+        if not steps:
+            continue
+        
+        color = colors[color_idx % len(colors)]
+        ax.plot(steps, losses, linewidth=1.5, label=method, color=color, marker='o', markersize=4)
+    
+    ax.set_xlabel("Step", fontsize=11)
+    ax.set_ylabel("Average Training Loss (across islands)", fontsize=11)
+    ax.set_title("Average Training Loss Comparison Across Methods", fontsize=12, fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=10)
+    
+    plt.tight_layout()
+    png_path = metrics_dir / "average_loss_comparison.png"
+    plt.savefig(png_path, dpi=100, bbox_inches="tight")
+    plt.close()
+
+
+def _plot_runtime_comparison(all_island_summaries: list[dict], metrics_dir: Path, methods: list[str]) -> None:
+    """Plot island-wise and average runtime by method."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+    
+    from collections import defaultdict
+    
+    # Group runtimes by method
+    method_runtimes = defaultdict(list)
+    for record in all_island_summaries:
+        method = record['method']
+        try:
+            elapsed = float(record['elapsed_time_seconds'])
+            method_runtimes[method].append(elapsed)
+        except (ValueError, KeyError):
+            pass
+    
+    # Calculate averages
+    method_avg_runtime = {m: sum(rts) / len(rts) if rts else 0 for m, rts in method_runtimes.items()}
+    
+    # Plot average runtime by method
+    fig, ax = plt.subplots(figsize=(8, 5))
+    methods_with_data = [m for m in methods if m in method_avg_runtime and method_avg_runtime[m] > 0]
+    if not methods_with_data:
+        return
+    
+    avg_times = [method_avg_runtime[m] for m in methods_with_data]
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    bar_colors = [colors[i % len(colors)] for i in range(len(methods_with_data))]
+    
+    bars = ax.bar(methods_with_data, avg_times, color=bar_colors, alpha=0.7, edgecolor='black')
+    
+    # Add value labels on bars
+    for bar, val in zip(bars, avg_times):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+               f'{val:.1f}s', ha='center', va='bottom', fontsize=10)
+    
+    ax.set_ylabel("Average Runtime (seconds)", fontsize=11)
+    ax.set_title("Average Training Runtime by Method", fontsize=12, fontweight="bold")
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    png_path = metrics_dir / "runtime_comparison.png"
+    plt.savefig(png_path, dpi=100, bbox_inches="tight")
+    plt.close()
+
+
+# ------------------------------------------------------- metrics collection per method
+def _collect_island_metrics(method: str, method_log_dir: Path, islands: int, 
+                            seed: int, elapsed_time: float = 0.0) -> tuple[list[dict], list[dict]]:
+    """Collect training loss history and summary metrics per island.
+    
+    Returns:
+        (island_summary_rows, training_loss_rows)
+        where island_summary_rows has: method, island_id, first_step_loss, last_step_loss, loss_improvement, elapsed_time_seconds, seed
+        and training_loss_rows has: method, island_id, step, loss, seed
+    """
+    import csv as csv_module
+    import glob
+    
+    island_summary = []
+    training_loss = []
+    
+    for i in range(islands):
+        # Parse PFMETRICS from island log (torchtitan already logs loss_metrics/global_avg_loss)
+        log_path = method_log_dir / f"island-{i}.log"
+        if not log_path.exists():
+            continue
+        
+        first_loss = None
+        last_loss = None
+        
+        try:
+            import json
+            steps_data = []
+            with open(log_path, errors="replace") as f:
+                for line in f:
+                    m = _PFMETRICS_RE.search(line)
+                    if not m:
+                        continue
+                    try:
+                        rec = json.loads(m.group(1))
+                    except json.JSONDecodeError:
+                        continue
+                    if "loss_metrics/global_avg_loss" in rec:
+                        steps_data.append(rec)
+            
+            # NOTE: PFMETRICS typically starts at step 1 (loss AFTER first gradient update).
+            # Step 0 (initial loss BEFORE any updates) should be logged by training script.
+            # For fair comparison across methods, both should start from step 0.
+            
+            # Extract first/last loss and record history
+            for rec in steps_data:
+                try:
+                    loss = float(rec.get("loss_metrics/global_avg_loss", float('nan')))
+                    if not (loss != loss):  # not NaN
+                        if first_loss is None:
+                            first_loss = loss
+                        last_loss = loss
+                    
+                    # Record training loss
+                    training_loss.append({
+                        'method': method,
+                        'island_id': str(i),
+                        'step': str(int(rec.get("step", 0))),
+                        'loss': f"{loss:.6f}",
+                        'seed': str(seed),
+                    })
+                except (ValueError, KeyError):
+                    pass
+            
+            # Note: elapsed_time is tracked via run_single_method() perf_counter() timing
+            # It's not stored in individual island logs, so we keep it as 0.0 here
+            pass
+            
+            if first_loss is not None and last_loss is not None:
+                loss_improvement = first_loss - last_loss
+                island_summary.append({
+                    'method': method,
+                    'island_id': str(i),
+                    'first_step_loss': f"{first_loss:.6f}",
+                    'last_step_loss': f"{last_loss:.6f}",
+                    'loss_improvement': f"{loss_improvement:.6f}",
+                    'elapsed_time_seconds': f"{elapsed_time:.2f}",
+                    'seed': str(seed),
+                })
+        except Exception as e:
+            print(f"  warning: failed to parse {history_path}: {e}", file=sys.stderr)
+    
+    return island_summary, training_loss
+
+
 # ------------------------------------------------------------------------ main
 def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Path, 
-                      gpus: list[int]) -> bool:
+                      gpus: list[int]) -> tuple[bool, float]:
     """Run a single decentralized training method.
     
-    Returns True if successful, False if failed.
+    Returns (success: bool, elapsed_time: float).
     """
+    # Track total runtime including all overhead
+    start_time = time.perf_counter()
+    
     # Update args to reflect the current method
     args_copy = argparse.Namespace(**vars(args))
     args_copy.outer_method = method
@@ -795,7 +1053,7 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
         if lighthouse.poll() is not None:
             print(f"== lighthouse exited immediately; see {lighthouse.log_path}", 
                   file=sys.stderr)
-            return False
+            return False, time.perf_counter() - start_time
         
         # 2. parameter server
         addrs: dict[str, str] = {}
@@ -814,15 +1072,15 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
         t0 = time.time()
         while not got_addrs.is_set():
             if stop.is_set():
-                return False
+                return False, time.perf_counter() - start_time
             if ps.poll() is not None:
                 print(f"== parameter server exited before announcing address; see {ps.log_path}", 
                       file=sys.stderr)
-                return False
+                return False, time.perf_counter() - start_time
             if time.time() - t0 > args_copy.ps_timeout:
                 print(f"== parameter server did not announce within {args_copy.ps_timeout}s", 
                       file=sys.stderr)
-                return False
+                return False, time.perf_counter() - start_time
             time.sleep(0.2)
         
         ps_addr, hb_addr = addrs["DILOCO_SERVER_ADDR"], addrs["DILOCO_HB_ADDR"]
@@ -842,20 +1100,20 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
         while True:
             if stop.is_set():
                 print("== interrupted; shutting down")
-                return False
+                return False, time.perf_counter() - start_time
             for infra in (lighthouse, ps):
                 if infra.poll() is not None:
                     print(f"== {infra.name} died (exit {infra.poll()}); aborting", 
                           file=sys.stderr)
-                    return False
+                    return False, time.perf_counter() - start_time
             codes = [t.poll() for t in trainers]
             failed = [(t.name, c) for t, c in zip(trainers, codes) if c not in (None, 0)]
             if failed:
                 print(f"== island(s) failed: {failed}; aborting", file=sys.stderr)
-                return False
+                return False, time.perf_counter() - start_time
             if all(c == 0 for c in codes):
                 print(f"== {method.upper()} completed successfully")
-                return True
+                return True, time.perf_counter() - start_time
             time.sleep(1.0)
     finally:
         shutdown(roles)
@@ -934,6 +1192,7 @@ def main() -> int:
         data_distributions_to_run = [args.data_distribution]
     
     methods_data: dict[str, list[list[dict]]] = {}
+    method_runtimes: dict[str, float] = {}  # Track elapsed time per method
     
     for dist_mode in data_distributions_to_run:
         # Temporarily set data_distribution for this iteration
@@ -951,10 +1210,12 @@ def main() -> int:
         for method in args.methods:
             method_key = f"{method}{method_suffix}"
             method_log_dir = base_log_dir / f"method-{method_key}"
-            success = run_single_method(method, args, method_log_dir, gpus)
+            success, elapsed_time = run_single_method(method, args, method_log_dir, gpus)
             if not success:
                 print(f"== method {method} ({dist_mode} mode) failed; aborting", file=sys.stderr)
                 return 1
+            print(f"== {method.upper()} runtime: {elapsed_time:.2f}s")
+            method_runtimes[method_key] = elapsed_time  # Store for metrics
 
             # Collect metrics for comparison plot
             try:
@@ -984,6 +1245,96 @@ def main() -> int:
                         print(f"   ✓ Collected metrics for {method_key} island-{i} from {csv_path.name}")
             except Exception as exc:
                 print(f"== warning: failed to collect metrics for {method} ({dist_mode}): {exc}", file=sys.stderr)
+
+    # Collect training loss history and island summaries for all methods
+    print()
+    print("="*70)
+    print("== Collecting training loss history and island summaries")
+    print("="*70)
+    print()
+    
+    all_island_summaries = []
+    all_training_losses = []
+    
+    for dist_mode in data_distributions_to_run:
+        original_dist = args.data_distribution
+        args.data_distribution = dist_mode
+        method_suffix = f"_{dist_mode}" if original_dist == "both" else ""
+        
+        for method in args.methods:
+            method_key = f"{method}{method_suffix}"
+            method_log_dir = base_log_dir / f"method-{method_key}"
+            
+            try:
+                elapsed = method_runtimes.get(method_key, 0.0)
+                summary_rows, loss_rows = _collect_island_metrics(
+                    method_key, method_log_dir, args.islands, args.seed, elapsed
+                )
+                all_island_summaries.extend(summary_rows)
+                all_training_losses.extend(loss_rows)
+                print(f"   ✓ Collected metrics for {method_key}: {len(summary_rows)} islands, {len(loss_rows)} loss records")
+            except Exception as exc:
+                print(f"   warning: failed to collect metrics for {method_key}: {exc}", file=sys.stderr)
+    
+    # Write CSVs
+    if all_island_summaries or all_training_losses:
+        import csv as csv_module
+        metrics_dir = base_log_dir / "metrics"
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write island_summary.csv
+        if all_island_summaries:
+            summary_csv_path = metrics_dir / "island_summary.csv"
+            with open(summary_csv_path, "w", newline="") as f:
+                w = csv_module.DictWriter(
+                    f, 
+                    fieldnames=['method', 'island_id', 'first_step_loss', 'last_step_loss', 
+                               'loss_improvement', 'elapsed_time_seconds', 'seed']
+                )
+                w.writeheader()
+                w.writerows(all_island_summaries)
+            print(f"   ✓ Wrote {summary_csv_path}")
+        
+        # Write training_loss_history.csv
+        if all_training_losses:
+            history_csv_path = metrics_dir / "training_loss_history.csv"
+            with open(history_csv_path, "w", newline="") as f:
+                w = csv_module.DictWriter(
+                    f, 
+                    fieldnames=['method', 'island_id', 'step', 'loss', 'seed']
+                )
+                w.writeheader()
+                w.writerows(all_training_losses)
+            print(f"   ✓ Wrote {history_csv_path}")
+    
+    # Generate training loss plots
+    print()
+    print("="*70)
+    print("== Generating training loss plots")
+    print("="*70)
+    print()
+    try:
+        if all_training_losses:
+            metrics_dir = base_log_dir / "metrics"
+            unique_methods = list(set(r['method'] for r in all_training_losses))
+            
+            # Per-island comparison plots
+            print("Generating per-island comparison plots...")
+            _plot_per_island_comparison(all_training_losses, metrics_dir, unique_methods, args.islands)
+            print(f"   ✓ Generated per-island loss comparison plots")
+            
+            # Average loss curves plot
+            print("Generating average loss curves plot...")
+            _plot_average_loss_curves(all_training_losses, metrics_dir, unique_methods)
+            print(f"   ✓ Generated average_loss_comparison.png")
+            
+            # Runtime comparison plot
+            if all_island_summaries:
+                print("Generating runtime comparison plot...")
+                _plot_runtime_comparison(all_island_summaries, metrics_dir, unique_methods)
+                print(f"   ✓ Generated runtime_comparison.png")
+    except Exception as exc:
+        print(f"== warning: loss plots generation failed: {exc}", file=sys.stderr)
 
     # Generate comparison plot and centralized evaluation log
     print()

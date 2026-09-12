@@ -7,6 +7,7 @@
 import logging
 import os
 import time
+import csv
 
 REPLICA_GROUP_ID = int(os.environ.get("REPLICA_GROUP_ID", 0))
 os.environ["CUDA_VISIBLE_DEVICES"] = str(REPLICA_GROUP_ID % 4)
@@ -17,6 +18,14 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from torch.utils.tensorboard import SummaryWriter
 
 from panoengine.decentralized.heloco import HeLoCoOptimizer, HeLoCoServer, HeLoCoWorker
+
+# Seed initialization for reproducibility
+_pf_seed = int(os.environ.get("PANOENGINE_SEED", 42))
+torch.manual_seed(_pf_seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(_pf_seed)
+import numpy as np
+np.random.seed(_pf_seed)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -89,6 +98,12 @@ def main() -> None:
     output_folder = f"output/replica-{REPLICA_GROUP_ID}"
     os.makedirs(output_folder, exist_ok=True)
     writer = SummaryWriter(f"{output_folder}/tensorboard", max_queue=1000)
+    
+    # Training loss tracking for reproducibility analysis
+    loss_history_path = os.path.join(output_folder, "training_loss_history.csv")
+    loss_history_file = open(loss_history_path, "w", newline="")
+    loss_writer = csv.DictWriter(loss_history_file, fieldnames=["step", "loss"])
+    loss_writer.writeheader()
 
     num_params = sum(p.numel() for p in m.parameters())
     logger.info(f"Worker {REPLICA_GROUP_ID}: {num_params:,} params")
@@ -100,6 +115,24 @@ def main() -> None:
         sync_every=20,
         heartbeat_address=hb_addr or None,
     ):
+        # Log step 0: initial loss before any training updates
+        step = 0
+        try:
+            first_batch = next(iter(trainloader))
+            first_inputs, first_labels = first_batch
+            first_inputs = first_inputs.to(device)
+            first_labels = first_labels.to(device)
+            
+            with torch.no_grad():
+                initial_out = m(first_inputs)
+                initial_loss = criterion(initial_out, first_labels)
+            
+            loss_writer.writerow({"step": 0, "loss": f"{initial_loss.item():.6f}"})
+            loss_history_file.flush()
+            logger.info(f"[worker {REPLICA_GROUP_ID}] step=0 (initial) loss={initial_loss.item():.4f}")
+        except Exception as e:
+            logger.warning(f"[worker {REPLICA_GROUP_ID}] Failed to log step 0 loss: {e}")
+        
         step = 0
         while True:
             for inputs, labels in trainloader:
@@ -113,6 +146,8 @@ def main() -> None:
                 inner_optimizer.step()
 
                 writer.add_scalar("loss", loss.item(), step)
+                loss_writer.writerow({"step": step, "loss": f"{loss.item():.6f}"})
+                loss_history_file.flush()
 
                 if step % 100 == 0:
                     logger.info(f"[worker {REPLICA_GROUP_ID}] step={step} loss={loss.item():.4f}")
@@ -120,6 +155,7 @@ def main() -> None:
                 step += 1
                 if step >= 1000:
                     writer.flush()
+                    loss_history_file.close()
                     return
 
 

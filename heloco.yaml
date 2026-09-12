@@ -17,8 +17,8 @@
 methods: [heloco, mla, diloco]
 
 # ================================================================ TOPOLOGY
-islands: 2              # number of workers (trainer replicas) per method
-gpus_per_island: 2      # GPUs per worker; FSDP-sharded inside each island
+islands: 4              # number of workers (trainer replicas) per method
+gpus_per_island: 1      # GPUs per worker; FSDP-sharded inside each island
 gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 
 # ================================================================ MODEL & RECIPE
@@ -44,7 +44,7 @@ gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 #
 # See models/<module_without_prefix>/config_registry.py for the exact preset body.
 module: models.llama3_small
-config: llama3_1b
+config: llama3_15m
 
 # Model assets: tokenizer (+ optional pretrained checkpoint). Must match the
 # config chosen above -- see the table next to `config:` for the right pairing.
@@ -52,9 +52,14 @@ hf_assets: ./assets/tokenizer/debug
 
 # ================================================================ TRAINING PARAMETERS
 dataset: c4             # torchtitan dataset name (streams from HF Hub)
-steps: 400              # inner training steps per island
+steps: 50              # inner training steps per island
 seq_len: 512            # sequence length
 batch: 8                # local batch size per GPU rank
+
+# ================================================================ REPRODUCIBILITY
+# Random seed for Python, NumPy, PyTorch (CPU/CUDA), DataLoader shuffling, etc.
+# Same seed ensures reproducible results across runs (subject to PyTorch/CUDA limitations).
+seed: 42
 
 # ================================================================ DATA DISTRIBUTION
 # data_distribution: iid, non_iid, or both
@@ -68,8 +73,8 @@ batch: 8                # local batch size per GPU rank
 #                         croatian, swedish, finnish, danish, bulgarian, lithuanian,
 #                         slovene, slovak, irish, maltese
 #
-data_distribution: both  # or: iid, non_iid, both
-languages: [english, french]  # per-island languages (only used if non_iid/both)
+data_distribution: iid  # or: iid, non_iid, both
+languages: [english, french, german, spanish]  # per-island languages (only used if non_iid/both)
 
 # ================================================================ ASYNC COORDINATION
 # Coordination method: sync (torchft barrier) or async (HTTP push/pull)
@@ -84,7 +89,7 @@ max_wait_time: 0.0           # max seconds to wait for server response; 0.0 = no
 # the code or running separate config files.
 
 # HeLoCo / DiLoCo / MLA window
-sync_steps: 50          # window H: inner steps between pushes to parameter server
+sync_steps: 10          # window H: inner steps between pushes to parameter server
 num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole model)
 
 # ================================================================ HETEROGENEITY SIMULATION
@@ -96,7 +101,7 @@ num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole 
 # fault_tolerance config has no such flag), and panoengine's AsyncDiLoCo worker
 # (panoengine/decentralized/async_diloco.py) sleeps extra time proportional to
 # (factor - 1) after every inner optimizer step.
-island_slowness_factors: [1, 1.5] #, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
+island_slowness_factors: [1, 1.5, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
 #island_slowness_factors: null
 
 # Server-side outer optimizer (HeLoCo, DiLoCo, MLA)
@@ -114,7 +119,7 @@ host: 127.0.0.1
 lighthouse_port: 29510  # rendezvous server port
 ps_port: 29520          # parameter server port
 rdzv_base_port: 29600   # island i rendezvous on rdzv_base_port + i
-log_dir: outputs/heloco_run   # base directory; will be expanded to:
+log_dir: outputs/heloco_run_test   # base directory; will be expanded to:
                               # outputs/heloco_run_{coordination_method}_{config}_{data_distribution}_{steps}
                               # Example: outputs/heloco_run_sync_qwen3_0_6b_iid_100
                               # Set custom value to disable this behavior

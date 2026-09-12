@@ -35,6 +35,7 @@ import json
 import math
 import os
 import random
+import time
 from collections import deque
 from pathlib import Path
 import urllib.request
@@ -57,11 +58,14 @@ from torch.utils.data import DataLoader, Dataset
 
 def seeding(seed: int) -> None:
     """Pin all random sources for reproducibility."""
+    import os as _os
+    _os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1285,6 +1289,7 @@ def inner_loop(
         scheduler = None
 
     first_loss = last_loss = None
+    step_losses: list[float] = []
     begin = local_updates_so_far - train_steps
 
     for step in range(begin, local_updates_so_far):
@@ -1296,9 +1301,11 @@ def inner_loop(
         optimizer.zero_grad()
         _, loss = compute_loss(local_model, data, target, task_type)
 
+        loss_val = float(loss.item())
         if first_loss is None:
-            first_loss = float(loss.item())
-        last_loss = float(loss.item())
+            first_loss = loss_val
+        last_loss = loss_val
+        step_losses.append(loss_val)
 
         loss.backward()
         optimizer.step()
@@ -1316,6 +1323,7 @@ def inner_loop(
         "pg_norm": pg_norm,
         "first_loss": first_loss,
         "last_loss": last_loss,
+        "step_losses": step_losses,
     }
 
 
@@ -1544,6 +1552,13 @@ class Experiment:
         self.num_total_local_updates = 0
         self.stats: list = []
         self.update_logs: list = []
+        # ── per-island training-loss history & runtime ──
+        self.island_loss_history: dict[int, list[tuple[int, float]]] = {}
+        self.island_next_step: dict[int, int] = {}
+        self.island_runtimes: dict[int, float] = {}
+        self.island_training_starts: dict[int, float] = {}
+        self._worker_real_start_time: dict[int, float] = {}
+        # ────────────────────────────────────────────────
         self.recent_update_vecs = deque(maxlen=20)
         self.ema_pg_norm: Optional[float] = None
         # Running EMA of server loss and per-sync improvement.
@@ -1859,6 +1874,24 @@ class AsyncExperiment(Experiment):
         first_loss = float(result.get("first_loss") or float("nan"))
         last_loss  = float(result.get("last_loss") or float("nan"))
 
+        # ── collect per-step training loss history ──
+        step_losses = result.get("step_losses", [])
+        wid = worker.worker_id
+        start_step = self.island_next_step.setdefault(wid, 0)
+        for i, loss_val in enumerate(step_losses):
+            self.island_loss_history.setdefault(wid, []).append(
+                (start_step + i, loss_val)
+            )
+        self.island_next_step[wid] = start_step + len(step_losses)
+        # ─────────────────────────────────────────────
+
+        # ── track elapsed real time per island ──
+        _start = self._worker_real_start_time.get(wid)
+        if _start is not None:
+            _elapsed = time.perf_counter() - _start
+            self.island_runtimes[wid] = self.island_runtimes.get(wid, 0.0) + _elapsed
+        # ──────────────────────────────────────────
+
         # Streaming diagnostics: previously this flattened the full
         # pseudo-gradient AND all momentum buffers to CPU every sync
         # (2 x model-size copies per arrival). Now cosines/norms are
@@ -1977,6 +2010,10 @@ class AsyncExperiment(Experiment):
             worker.start_params          = [p.detach().clone().cpu() for p in self.server_model.parameters()]
             worker.start_server_model_id = self.model_id
 
+# ── record real-time training start ──
+            self._worker_real_start_time[worker.worker_id] = time.perf_counter()
+            self.island_runtimes.setdefault(worker.worker_id, 0.0)
+            # ────────────────────────────────────────
             worker.future = self.thread_pool.submit(
                 inner_loop,
                 dispatch_mod,
@@ -2112,6 +2149,23 @@ class SyncExperiment(Experiment):
         first_loss = float(np.mean([r.get("first_loss", float("nan")) for r in results]))
         last_loss  = float(np.mean([r.get("last_loss",  float("nan")) for r in results]))
 
+        # ── collect per-step training loss history per worker ──
+        for w, r in zip(workers, results):
+            wid = w.worker_id
+            step_losses = r.get("step_losses", [])
+            start_step = self.island_next_step.setdefault(wid, 0)
+            for i, loss_val in enumerate(step_losses):
+                self.island_loss_history.setdefault(wid, []).append(
+                    (start_step + i, loss_val)
+                )
+            self.island_next_step[wid] = start_step + len(step_losses)
+            # ── track elapsed real time per island ──
+            _start = self._worker_real_start_time.get(wid)
+            if _start is not None:
+                _elapsed = time.perf_counter() - _start
+                self.island_runtimes[wid] = self.island_runtimes.get(wid, 0.0) + _elapsed
+        # ─────────────────────────────────────────────
+
         if self.recent_update_vecs:
             sims = [cosine_similarity(pg_vec_small, v) for v in self.recent_update_vecs]
             sims = [s for s in sims if not math.isnan(s)]
@@ -2204,6 +2258,12 @@ class SyncExperiment(Experiment):
             dispatch_mod = self._dispatch_model().to(worker.device)
             worker.start_params          = [p.detach().clone().cpu() for p in self.server_model.parameters()]
             worker.start_server_model_id = self.model_id
+
+            # ── record real-time training start ──
+            self._worker_real_start_time[worker.worker_id] = time.perf_counter()
+            self.island_runtimes.setdefault(worker.worker_id, 0.0)
+            # ────────────────────────────────────────
+
             worker.future = self.thread_pool.submit(
                 inner_loop,
                 dispatch_mod,
@@ -2586,6 +2646,180 @@ import json
 import pandas as pd
 
 
+# ---------------------------------------------------------------------------
+# Island-level training-loss summaries, plots, and CSV export
+# ---------------------------------------------------------------------------
+
+def print_island_summary(exp, method_label: str, seed: int) -> None:
+    """Print a concise per-island training-loss + runtime summary to console."""
+    print(f"\n{'='*50}")
+    print(f"Method: {method_label}")
+    print(f"{'='*50}")
+    history = getattr(exp, "island_loss_history", {})
+    runtimes = getattr(exp, "island_runtimes", {})
+    for wid in sorted(history.keys()):
+        pairs = history.get(wid, [])
+        if not pairs:
+            continue
+        first_loss = pairs[0][1]
+        last_loss = pairs[-1][1]
+        improvement = first_loss - last_loss
+        rt = runtimes.get(wid, float("nan"))
+        print(f"\nIsland {wid}")
+        print(f"  First step training loss: {first_loss:.6f}")
+        print(f"  Last step training loss:  {last_loss:.6f}")
+        print(f"  Loss improvement:         {improvement:.6f}")
+        print(f"  Runtime:                  {rt:.2f} sec")
+    firsts = [history[w][0][1] for w in sorted(history.keys()) if history.get(w)]
+    lasts = [history[w][-1][1] for w in sorted(history.keys()) if history.get(w)]
+    rts = [runtimes.get(w, float("nan")) for w in sorted(history.keys())]
+    if firsts:
+        print(f"\nAverage first step training loss: {np.mean(firsts):.6f}")
+    if lasts:
+        print(f"Average last step training loss:  {np.mean(lasts):.6f}")
+    if firsts and lasts:
+def save_island_training_data(exp, method_label: str, seed: int, out_dir: Path) -> tuple:
+    """Save island summary CSV and full training-loss history CSV."""
+    import csv as _csv
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    history = getattr(exp, "island_loss_history", {})
+    runtimes = getattr(exp, "island_runtimes", {})
+
+    sum_path = out_dir / "island_summary.csv"
+    with open(sum_path, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["method", "island_id", "first_step_loss", "last_step_loss",
+                     "loss_improvement", "elapsed_time_seconds", "seed"])
+        for wid in sorted(history.keys()):
+            pairs = history.get(wid, [])
+            if not pairs:
+                continue
+            first_loss = pairs[0][1]
+            last_loss = pairs[-1][1]
+            imp = first_loss - last_loss
+            rt = runtimes.get(wid, float("nan"))
+            w.writerow([method_label, wid, first_loss, last_loss, imp, rt, seed])
+
+    hist_path = out_dir / "training_loss_history.csv"
+    with open(hist_path, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["method", "island_id", "step", "loss", "seed"])
+        for wid in sorted(history.keys()):
+            for step, loss_val in history.get(wid, []):
+                w.writerow([method_label, wid, step, loss_val, seed])
+def plot_island_training_loss(all_history: dict, out_dir: Path) -> list:
+    """One figure per island: compare methods."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    all_islands = set()
+    for h in all_history.values():
+        all_islands.update(h.keys())
+    if not all_islands:
+        return saved
+
+    for wid in sorted(all_islands):
+        fig, ax = plt.subplots(figsize=(10, 5))
+        for method_label, h in all_history.items():
+            pairs = h.get(wid)
+            if not pairs:
+                continue
+            steps, losses = zip(*pairs)
+            ax.plot(steps, losses, linewidth=1.5, label=method_label)
+        ax.set_title(f"Island {wid} — Training Loss")
+        ax.set_xlabel("Training Step")
+        ax.set_ylabel("Training Loss")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        path = out_dir / f"island_{wid}_loss.png"
+        fig.savefig(path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(path)
+def plot_average_island_loss(all_history: dict, out_dir: Path) -> Path:
+    """Average training loss across islands for each method."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for method_label, history in all_history.items():
+        step_losses: dict[int, list[float]] = {}
+        for wid, pairs in history.items():
+            for step, loss_val in pairs:
+                step_losses.setdefault(step, []).append(loss_val)
+        if not step_losses:
+            continue
+        steps = sorted(step_losses.keys())
+        avg_losses = [np.mean(step_losses[s]) for s in steps]
+        ax.plot(steps, avg_losses, linewidth=1.5, label=method_label)
+    ax.set_title("Average Island Training Loss")
+    ax.set_xlabel("Training Step")
+    ax.set_ylabel("Average Training Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = out_dir / "average_island_loss.png"
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+def plot_island_runtime(all_runtimes: dict, out_dir: Path) -> Path:
+    """Grouped bar chart: island runtimes by method."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    methods = sorted(all_runtimes.keys())
+    all_islands = set()
+    for rt in all_runtimes.values():
+        all_islands.update(rt.keys())
+    island_ids = sorted(all_islands)
+    if not methods or not island_ids:
+        return out_dir / "island_runtime_comparison.png"
+    x = np.arange(len(island_ids))
+    bar_width = 0.25
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for i, method_label in enumerate(methods):
+        values = [all_runtimes[method_label].get(wid, 0.0) for wid in island_ids]
+        offset = (i - len(methods) / 2 + 0.5) * bar_width
+        ax.bar(x + offset, values, bar_width, label=method_label)
+    ax.set_title("Island Runtime Comparison")
+    ax.set_xlabel("Island ID")
+    ax.set_ylabel("Runtime (seconds)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(wid) for wid in island_ids])
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    path = out_dir / "island_runtime_comparison.png"
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def plot_average_runtime(all_runtimes: dict, out_dir: Path) -> Path:
+    """Simple bar chart: average runtime per method."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    methods = sorted(all_runtimes.keys())
+    avgs = []
+    for m in methods:
+        vals = [t for t in all_runtimes[m].values() if not math.isnan(t)]
+        avgs.append(np.mean(vals) if vals else 0.0)
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.bar(methods, avgs, width=0.4)
+    ax.set_title("Average Runtime by Method")
+    ax.set_xlabel("Method")
+    ax.set_ylabel("Average Runtime (seconds)")
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    path = out_dir / "average_runtime_comparison.png"
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return path
+    plt.close(fig)
+    return path
+    return saved
+    return sum_path, hist_path
+        print(f"Average loss improvement:         {np.mean([a - b for a, b in zip(firsts, lasts)]):.6f}")
+    valid_rt = [t for t in rts if not math.isnan(t)]
+    if valid_rt:
+        print(f"Average runtime:                  {np.mean(valid_rt):.2f} sec")
 def export_run_bundle(exp, save_root="saved_runs", run_label=None):
     """
     Export one experiment run:
