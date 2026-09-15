@@ -66,6 +66,8 @@ def _load_config_file(path: str) -> dict:
         dest = str(key).replace("-", "_")
         if dest == "gpus" and isinstance(value, list):
             value = ",".join(str(g) for g in value)
+        if dest == "correction_workers" and isinstance(value, list):
+            value = ",".join(str(g) for g in value)
         if dest == "extra" and value is not None and not isinstance(value, list):
             raise SystemExit(f"{path}: 'extra' must be a list of strings")
         out[dest] = value
@@ -103,12 +105,24 @@ def parse_args() -> argparse.Namespace:
     recipe.add_argument("--steps", type=int, default=30, help="inner training steps per island")
     recipe.add_argument("--seq-len", type=int, default=1024)
     recipe.add_argument("--batch", type=int, default=1, help="local batch size per rank")
+    recipe.add_argument("--tokens-per-parameter", type=float, default=None,
+                        help="if set, ignore --steps and instead auto-calculate the number "
+                             "of training steps needed to reach a GLOBAL training-token "
+                             "budget of model_parameter_count * tokens_per_parameter, summed "
+                             "across ALL islands (not per island). null/unset (default): "
+                             "keep the manually configured --steps unchanged.")
     recipe.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                         help="anything after --extra is appended verbatim to every torchrun")
 
     async_grp = p.add_argument_group("coordination (async trainer Path A)")
     async_grp.add_argument("--coordination-method", choices=["sync", "async"], default="sync",
-                           help="sync (torchft barrier) or async (HTTP push/pull). (default: sync)")
+                           help="sync: TRUE round-based synchronous training -- the parameter "
+                                "server waits for all --islands pseudo-gradients, applies ONE "
+                                "outer step on their mean, then broadcasts. async: the historical "
+                                "AsyncDiLoCo/HTTP parameter-server path (each push applies its own "
+                                "outer step immediately, no waiting on other workers). Both use "
+                                "the same trainer-side wire path; the difference is server-side. "
+                                "(default: sync)")
     async_grp.add_argument("--async-interval", type=int, default=1,
                            help="check staleness every N window pulses (async only). (default: 1)")
     async_grp.add_argument("--max-wait-time", type=float, default=0.0,
@@ -128,6 +142,48 @@ def parse_args() -> argparse.Namespace:
                            "trainers use the same 'heloco' wire path either way)")
     algo.add_argument("--should-quantize", action="store_true",
                       help="int8 pseudo-gradient upload (set on both ends automatically)")
+    algo.add_argument("--correction-workers", default="all",
+                      help="HeLoCo only: which islands (by index, matching "
+                           "--fault_tolerance.replica_id) get HeLoCo's tensor-block "
+                           "correction -- 'all' (default), 'none', or comma-separated "
+                           "island indices, e.g. '0' or '0,2'. Non-selected islands still "
+                           "train/communicate normally but are committed as plain "
+                           "(uncorrected) async DiLoCo.")
+    algo.add_argument("--correction-scope", choices=["tensorwise", "whole_gradient"],
+                      default="tensorwise",
+                      help="HeLoCo only: 'tensorwise' (default) makes one cosine/"
+                           "confidence/correction decision per tensor block (Algorithm 2 "
+                           "as published); 'whole_gradient' flattens the whole pseudo-"
+                           "gradient/momentum into one vector and makes a SINGLE decision "
+                           "applied consistently across the whole update.")
+    algo.add_argument("--correction-heatmap", action="store_true",
+                      help="HeLoCo only: record per-tensor correction statistics "
+                           "(cosine similarity, correction type, correction magnitude) "
+                           "for regenerating a tensor/block heatmap after training. "
+                           "With --correction-scope whole_gradient, one whole-update row "
+                           "is logged per push instead of per-tensor rows.")
+    algo.add_argument("--other-islands-method", choices=["heloco_uncorrected", "diloco"],
+                      default="heloco_uncorrected",
+                      help="HeLoCo only: what islands NOT selected by "
+                           "--correction-workers get instead of HeLoCo's directional "
+                           "correction. 'heloco_uncorrected' (default): still "
+                           "HeLoCoOptimizer/MLA + look-ahead dispatch, just without "
+                           "Algorithm-2 correction (ablates correction only). "
+                           "'diloco': those islands are true async DiLoCo, committed "
+                           "through a SEPARATE DelayedNesterovOptimizer (its own momentum "
+                           "state) and sent the plain global-model snapshot, never the "
+                           "HeLoCo look-ahead one. Selected islands are always full "
+                           "HeLoCo either way.")
+    algo.add_argument("--diloco-lr", type=float, default=None,
+                      help="other-islands-method=diloco only: outer lr for the "
+                           "true-DiLoCo optimizer (default: --outer-lr)")
+    algo.add_argument("--diloco-momentum", type=float, default=None,
+                      help="other-islands-method=diloco only: momentum for the "
+                           "true-DiLoCo optimizer (default: --outer-momentum)")
+    algo.add_argument("--diloco-nesterov-period", type=int, default=None,
+                      help="other-islands-method=diloco only: DelayedNesterovOptimizer's "
+                           "nesterov_period for non-selected islands (default: number of "
+                           "non-selected islands, minimum 1)")
 
     net = p.add_argument_group("ports / misc")
     net.add_argument("--host", default="127.0.0.1")
@@ -223,7 +279,134 @@ def parse_args() -> argparse.Namespace:
                 f"All slowness factors in heloco.yaml must be positive (> 0). Got: {args.island_slowness_factors}"
             )
 
+    # Normalize --correction-workers: 'all' | 'none' | comma-separated indices
+    # (accepts a YAML list too, already comma-joined by _load_config_file).
+    raw_cw = args.correction_workers
+    if isinstance(raw_cw, list):
+        raw_cw = ",".join(str(x) for x in raw_cw)
+    raw_cw = str(raw_cw).strip().lower()
+    if raw_cw in ("all", "none"):
+        args.correction_workers = raw_cw
+    else:
+        try:
+            indices = sorted({int(x) for x in raw_cw.split(",") if x.strip() != ""})
+        except ValueError:
+            raise SystemExit(
+                f"--correction-workers must be 'all', 'none', or comma-separated "
+                f"island indices (e.g. '0' or '0,2'); got {raw_cw!r}"
+            )
+        for idx in indices:
+            if not 0 <= idx < args.islands:
+                raise SystemExit(
+                    f"--correction-workers index {idx} out of range for "
+                    f"--islands {args.islands}"
+                )
+        args.correction_workers = ",".join(str(i) for i in indices)
+
     return args
+
+
+# --------------------------------------------------------- token budget calc
+def _build_recipe_config(module: str, config: str, batch: int, seq_len: int):
+    """Load the --module/--config preset via torchtitan's own ConfigManager.
+
+    Same (module, config) pair the trainers/parameter-server resolve to a
+    config_registry preset with -- single source of truth for model_spec,
+    training.* (batch/seq_len/grad-accum) and parallelism.*. ``batch``/
+    ``seq_len`` are applied as CLI overrides, mirroring the
+    ``--training.local_batch_size``/``--training.seq_len`` overrides
+    ``trainer_cmd()`` passes to the real torchrun launch -- so this reads
+    the exact values that will actually be used, not just the preset
+    defaults (which may differ from the YAML/CLI --batch/--seq-len).
+    """
+    from torchtitan.config.manager import ConfigManager
+
+    return ConfigManager().parse_args([
+        "--module", module,
+        "--config", config,
+        f"--training.local_batch_size={batch}",
+        f"--training.seq_len={seq_len}",
+    ])
+
+
+def count_model_parameters(module: str, config: str, batch: int, seq_len: int) -> int:
+    """Return the real parameter count for --module/--config, meta-built only.
+
+    Reuses torchtitan's own ConfigManager (--module/--config selects the same
+    config_registry preset the trainers/parameter-server use) and each
+    model's ``get_nparams_and_flops`` -- no hardcoded per-flavor param counts.
+    The model is built on the ``meta`` device (no weights materialized, no
+    GPU work) purely to count parameters.
+    """
+    import torch
+
+    cfg = _build_recipe_config(module, config, batch, seq_len)
+    model_spec = cfg.model_spec
+    with torch.device("meta"):
+        model = model_spec.model.build()
+    nparams, _ = model_spec.model.get_nparams_and_flops(model, cfg.training.seq_len)
+    return nparams
+
+
+def tokens_per_training_step(
+    module: str, config: str, gpus_per_island: int, batch: int, seq_len: int
+) -> int:
+    """Tokens ONE island consumes per training step, using TorchTitan's own
+    batch-size resolution (handles global_batch_size / gradient accumulation
+    / data-parallel degree correctly, however the preset or CLI overrides
+    change them -- not just the current local_batch_size*seq_len case).
+
+    Mirrors torchtitan.trainer.Trainer.__init__'s batch-size verification:
+        batch_degree = parallel_dims.dp_replicate * parallel_dims.dp_shard
+        global_batch_size = (
+            config.training.global_batch_size if >= 0
+            else config.training.local_batch_size * batch_degree
+        )
+        tokens_per_step = global_batch_size * seq_len
+
+    (gradient_accumulation_steps does not change token count per step: it
+    only changes how many micro-batches make up that same global_batch_size.)
+    ``gpus_per_island`` stands in for the island's own world_size (this
+    launcher runs one FSDP-sharded replica per island); tensor/pipeline/
+    context-parallel degrees come from the preset/CLI as usual.
+    """
+    from torchtitan.distributed.parallel_dims import ParallelDims
+
+    cfg = _build_recipe_config(module, config, batch, seq_len)
+    parallel_dims = ParallelDims.from_config(
+        cfg.parallelism, world_size=gpus_per_island
+    )
+    batch_degree = parallel_dims.dp_replicate * parallel_dims.dp_shard
+    global_batch_size = cfg.training.global_batch_size
+    if global_batch_size < 0:
+        global_batch_size = cfg.training.local_batch_size * batch_degree
+    return global_batch_size * cfg.training.seq_len
+
+
+def compute_dynamic_steps(
+    tokens_per_parameter: float,
+    model_param_count: int,
+    islands: int,
+    tokens_per_step_per_island: int,
+) -> tuple[int, int, int]:
+    """Steps needed for a GLOBAL (all-islands) token budget.
+
+    target_training_tokens = model_param_count * tokens_per_parameter
+    global_tokens_per_step  = tokens_per_step_per_island * islands
+                              (one local training step per island per round;
+                              tokens_per_step_per_island already accounts for
+                              TorchTitan's global_batch_size / gradient-
+                              accumulation / data-parallel-degree semantics --
+                              see tokens_per_training_step())
+    steps                   = ceil(target_training_tokens / global_tokens_per_step)
+
+    Returns (target_training_tokens, global_tokens_per_step, steps).
+    """
+    target_training_tokens = int(round(model_param_count * tokens_per_parameter))
+    global_tokens_per_step = tokens_per_step_per_island * islands
+    steps = max(1, math.ceil(target_training_tokens / global_tokens_per_step))
+    return target_training_tokens, global_tokens_per_step, steps
+
 
 
 
@@ -265,6 +448,11 @@ def preflight(args: argparse.Namespace) -> list[int]:
                         f"--num-fragments ({args.num_fragments})")
     if args.num_fragments > 1 and args.outer_method != "heloco":
         problems.append("--num-fragments > 1 requires --outer-method heloco")
+    if args.coordination_method == "sync" and args.num_fragments > 1:
+        problems.append(
+            "--coordination-method sync requires --num-fragments 1 "
+            "(true sync always aggregates the whole model in one round)"
+        )
 
     if problems:
         print("preflight failed:\n  - " + "\n  - ".join(problems), file=sys.stderr)
@@ -297,6 +485,32 @@ def ps_cmd(args) -> list[str]:
     ]
     if args.outer_method == "heloco":
         cmd += ["--rho", f"{rho:.6f}"]
+        cmd += ["--correction_workers", str(getattr(args, "correction_workers", "all"))]
+        cmd += ["--correction_scope", str(getattr(args, "correction_scope", "tensorwise"))]
+        if getattr(args, "correction_heatmap", False):
+            cmd.append("--correction_heatmap")
+            cmd += ["--correction_heatmap_dir",
+                    str(Path(getattr(args, "comm_log_dir", "outputs")).parent / "correction_heatmap")]
+        other_islands_method = getattr(args, "other_islands_method", "heloco_uncorrected")
+        cmd += ["--other_islands_method", str(other_islands_method)]
+        if other_islands_method == "diloco":
+            diloco_lr = getattr(args, "diloco_lr", None)
+            if diloco_lr is not None:
+                cmd += ["--diloco_lr", str(diloco_lr)]
+            diloco_momentum = getattr(args, "diloco_momentum", None)
+            if diloco_momentum is not None:
+                cmd += ["--diloco_momentum", str(diloco_momentum)]
+            diloco_nesterov_period = getattr(args, "diloco_nesterov_period", None)
+            if diloco_nesterov_period is None:
+                # Non-selected island count, matching the plain-diloco
+                # convention below (nesterov_period >= number of workers
+                # sharing this optimizer instance); minimum 1.
+                num_selected = 0 if args.correction_workers == "none" else (
+                    args.islands if args.correction_workers == "all"
+                    else len(str(args.correction_workers).split(","))
+                )
+                diloco_nesterov_period = max(1, args.islands - num_selected)
+            cmd += ["--diloco_nesterov_period", str(diloco_nesterov_period)]
     else:
         # DelayedNesterov milestone: >= number of workers.
         cmd += ["--nesterov_period", str(args.islands)]
@@ -304,6 +518,13 @@ def ps_cmd(args) -> list[str]:
         cmd += ["--num_fragments", str(args.num_fragments)]
     if args.should_quantize:
         cmd.append("--should_quantize")
+    if args.coordination_method == "sync":
+        # TRUE round-based sync: the server blocks every push until all
+        # --islands pseudo-gradients of the round have arrived, applies ONE
+        # outer step on their mean, then broadcasts -- see SyncExperiment in
+        # archive/heloco_stable_v2.py. "async" (default) leaves this unset,
+        # keeping the historical AsyncDiLoCo/HTTP parameter-server path.
+        cmd += ["--sync_workers", str(args.islands)]
     return cmd
 
 
@@ -359,6 +580,11 @@ def trainer_env(args, island: int, gpus: list[int], ps_addr: str, hb_addr: str) 
         "PANOENGINE_SEED": str(args.seed),
         "PANOFABRIC_COMM_LOG_DIR": getattr(args, "comm_log_dir", ""),
         "PANOFABRIC_METHOD": getattr(args, "outer_method", ""),
+        # HeLoCo correction_workers/heatmap: the server needs to know WHICH
+        # island each push came from to decide whether to correct it and to
+        # label heatmap rows. Not a torchtitan CLI option, so it travels as
+        # an env var (same pattern as ISLAND_LANGUAGE / PF_WIRE_BF16).
+        "PF_ISLAND_ID": str(island),
     }
     
     # For non-IID data distribution, set language for this island
@@ -1053,6 +1279,20 @@ def _collect_island_metrics(method: str, method_log_dir: Path, islands: int,
                 island_summary.append({
                     'method': method,
                     'island_id': str(i),
+                    # first_train_loss/last_train_loss: the genuine first/last
+                    # training-batch loss the trainer already computed --
+                    # first_loss is the loss_metrics/global_avg_loss value at
+                    # the FIRST PFMETRICS record (torchtitan logs it at step
+                    # 1, computed by that step's forward pass BEFORE its
+                    # optimizer.step() -- see torchtitan/trainer.py
+                    # train_step(): loss is accumulated during
+                    # forward_backward_step, the optimizer step happens
+                    # after). No extra forward pass; not forced equal across
+                    # methods/islands -- reproducibility is a property of
+                    # matching init/seed/data, not enforced here.
+                    'first_train_loss': f"{first_loss:.6f}",
+                    'last_train_loss': f"{last_loss:.6f}",
+                    # Kept for backward compatibility with existing consumers.
                     'first_step_loss': f"{first_loss:.6f}",
                     'last_step_loss': f"{last_loss:.6f}",
                     'loss_improvement': f"{loss_improvement:.6f}",
@@ -1203,6 +1443,39 @@ def build_dynamic_log_dir(base_log_dir: Path, args: argparse.Namespace) -> Path:
 
 def main() -> int:
     args = parse_args()
+
+    # Dynamic training-token budget: tokens_per_parameter overrides --steps
+    # with an auto-calculated value derived from the model's real parameter
+    # count and the GLOBAL (all-islands) token budget. tokens_per_parameter
+    # is null by default, which leaves --steps exactly as configured.
+    args.model_param_count = None
+    args.target_training_tokens = None
+    args.tokens_per_step = None
+    if args.tokens_per_parameter is not None:
+        model_param_count = count_model_parameters(
+            args.module, args.config, args.batch, args.seq_len
+        )
+        tokens_per_step_per_island = tokens_per_training_step(
+            args.module, args.config, args.gpus_per_island, args.batch, args.seq_len
+        )
+        target_training_tokens, tokens_per_step, steps = compute_dynamic_steps(
+            tokens_per_parameter=args.tokens_per_parameter,
+            model_param_count=model_param_count,
+            islands=args.islands,
+            tokens_per_step_per_island=tokens_per_step_per_island,
+        )
+        args.model_param_count = model_param_count
+        args.target_training_tokens = target_training_tokens
+        args.tokens_per_step = tokens_per_step
+        args.steps = steps
+        print("== dynamic token budget:")
+        print(f"   Model parameters       : {model_param_count:,}")
+        print(f"   Tokens per parameter   : {args.tokens_per_parameter:g}")
+        print(f"   Target training tokens : {target_training_tokens:,}")
+        print(f"   Islands                : {args.islands}")
+        print(f"   Tokens per step        : {tokens_per_step:,}")
+        print(f"   Calculated steps       : {steps:,}")
+
     # Build dynamic log directory or use the provided one
     base_log_dir_arg = Path(args.log_dir)
     
@@ -1339,7 +1612,8 @@ def main() -> int:
             with open(summary_csv_path, "w", newline="") as f:
                 w = csv_module.DictWriter(
                     f, 
-                    fieldnames=['method', 'island_id', 'first_step_loss', 'last_step_loss', 
+                    fieldnames=['method', 'island_id', 'first_train_loss', 'last_train_loss',
+                               'first_step_loss', 'last_step_loss',
                                'loss_improvement', 'elapsed_time_seconds', 'seed']
                 )
                 w.writeheader()

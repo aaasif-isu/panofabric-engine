@@ -97,6 +97,15 @@ def build_server(
     should_quantize: bool = False,
     max_sessions: int | None = None,
     num_fragments: int | None = None,
+    sync_workers: int = 0,
+    correction_workers: str = "all",
+    correction_scope: str = "tensorwise",
+    correction_heatmap: bool = False,
+    correction_heatmap_dir: str | None = None,
+    other_islands_method: str = "heloco_uncorrected",
+    diloco_lr: float | None = None,
+    diloco_momentum: float | None = None,
+    diloco_nesterov_period: int = 10,
 ):
     """Build the parameter server around an unsharded CPU model.
 
@@ -111,6 +120,21 @@ def build_server(
         set >= number of workers).
       - ``mla``: MLA (Momentum Look-Ahead) -- simple momentum accumulation on
         server side (no direction correction or look-ahead initialization).
+
+    ``sync_workers`` (``--coordination-method sync`` in run_heloco.py): when
+    > 0, TRUE round-based synchronous training -- every push blocks until
+    exactly ``sync_workers`` pseudo-gradients have arrived, applies ONE
+    outer step on their mean, then broadcasts. 0 (default) is the
+    historical asynchronous parameter-server path.
+
+    ``other_islands_method`` (``heloco`` only): what non-selected
+    (``correction_workers``) islands get instead of HeLoCo's directional
+    correction -- ``"heloco_uncorrected"`` (default): still HeLoCoOptimizer/
+    MLA + look-ahead dispatch, just without Algorithm-2 correction (an
+    ablation of correction only). ``"diloco"``: those islands are true
+    async DiLoCo, committed through a separate ``DelayedNesterovOptimizer``
+    (``diloco_lr``/``diloco_momentum``/``diloco_nesterov_period``) and sent
+    the plain global-model snapshot, never HeLoCo look-ahead.
     """
     model = model.to(device="cpu", dtype=torch.float32)
     extra_kwargs = {}
@@ -135,11 +159,26 @@ def build_server(
                 "(diloco's DelayedNesterov milestone count is whole-model)"
             )
         extra_kwargs["num_fragments"] = num_fragments
+    if sync_workers > 0:
+        if num_fragments is not None and num_fragments > 1:
+            raise ValueError(
+                "sync_workers (true round-based sync) requires "
+                "num_fragments == 1"
+            )
+        extra_kwargs["sync_workers"] = sync_workers
     if outer_method == "heloco":
         outer = HeLoCoOptimizer(model.parameters(), lr=lr, momentum=momentum)
         server_cls = HeLoCoServer
         if rho is not None:
             extra_kwargs["rho"] = rho
+        extra_kwargs["correction_workers"] = correction_workers
+        extra_kwargs["correction_scope"] = correction_scope
+        extra_kwargs["correction_heatmap"] = correction_heatmap
+        extra_kwargs["correction_heatmap_dir"] = correction_heatmap_dir
+        extra_kwargs["other_islands_method"] = other_islands_method
+        extra_kwargs["diloco_lr"] = diloco_lr
+        extra_kwargs["diloco_momentum"] = diloco_momentum
+        extra_kwargs["diloco_nesterov_period"] = diloco_nesterov_period
     elif outer_method == "diloco":
         if rho is not None:
             raise ValueError("rho is HeLoCo's arrival weight; diloco has none")
@@ -650,6 +689,70 @@ def main() -> None:
         help="heloco arrival weight (default: torchft's 1.0; the paper "
         "recommends 1/sqrt(num_workers))",
     )
+    parser.add_argument(
+        "--correction_workers",
+        type=str,
+        default="all",
+        help="heloco only: which islands get HeLoCo tensor-block correction "
+        "-- 'all' (default), 'none', or comma-separated island indices "
+        "(e.g. '0' or '0,2'). Non-selected islands still push/pull "
+        "normally but are committed as plain (uncorrected) async DiLoCo.",
+    )
+    parser.add_argument(
+        "--correction_scope",
+        choices=["tensorwise", "whole_gradient"],
+        default="tensorwise",
+        help="heloco only: 'tensorwise' (default) makes one cosine/"
+        "confidence/correction decision per tensor block (Algorithm 2 as "
+        "published); 'whole_gradient' flattens the whole pseudo-gradient/"
+        "momentum into one vector and makes a single decision applied "
+        "consistently across the whole update.",
+    )
+    parser.add_argument("--correction_heatmap", action="store_true",
+                        help="heloco only: record per-tensor (or, under "
+                        "whole_gradient scope, per-update) correction "
+                        "statistics for regenerating a heatmap after "
+                        "training.")
+    parser.add_argument(
+        "--correction_heatmap_dir",
+        type=str,
+        default=None,
+        help="directory the correction_heatmap.csv is written under "
+        "(default: $PANOFABRIC_COMM_LOG_DIR)",
+    )
+    parser.add_argument(
+        "--other_islands_method",
+        choices=["heloco_uncorrected", "diloco"],
+        default="heloco_uncorrected",
+        help="heloco only: what non-selected (--correction_workers) islands "
+        "get instead of HeLoCo directional correction. "
+        "'heloco_uncorrected' (default): still HeLoCoOptimizer/MLA + "
+        "look-ahead dispatch, just without Algorithm-2 correction. "
+        "'diloco': true async DiLoCo via a SEPARATE DelayedNesterovOptimizer "
+        "(own momentum state) and the plain global-model snapshot on pull "
+        "(no look-ahead). Selected islands are always full HeLoCo either way.",
+    )
+    parser.add_argument(
+        "--diloco_lr",
+        type=float,
+        default=None,
+        help="other_islands_method=diloco only: outer lr for the true-DiLoCo "
+        "optimizer (default: same as --lr)",
+    )
+    parser.add_argument(
+        "--diloco_momentum",
+        type=float,
+        default=None,
+        help="other_islands_method=diloco only: momentum for the true-DiLoCo "
+        "optimizer (default: same as --momentum)",
+    )
+    parser.add_argument(
+        "--diloco_nesterov_period",
+        type=int,
+        default=10,
+        help="other_islands_method=diloco only: DelayedNesterovOptimizer's "
+        "nesterov_period for non-selected islands (>= their count)",
+    )
     parser.add_argument("--dylu_H", type=int, default=0)
     parser.add_argument("--grace_period", type=float, default=0.0)
     parser.add_argument(
@@ -682,6 +785,16 @@ def main() -> None:
     )
     # Relay publishing (the heloco_async_inference hub role). Leave
     # --relay_addr unset for plain HeLoCo/DiLoCo (no generator pool to feed).
+    parser.add_argument(
+        "--sync_workers",
+        type=int,
+        default=0,
+        help="TRUE round-based synchronous training: block every push until "
+        "exactly this many pseudo-gradients have arrived, apply ONE outer "
+        "step on their mean, then broadcast (--coordination-method sync in "
+        "run_heloco.py; typically == --islands). 0 (default): the "
+        "historical asynchronous parameter-server path.",
+    )
     parser.add_argument(
         "--relay_addr",
         type=str,
@@ -739,6 +852,15 @@ def main() -> None:
         should_quantize=args.should_quantize,
         max_sessions=args.max_sessions,
         num_fragments=args.num_fragments,
+        sync_workers=args.sync_workers,
+        correction_workers=args.correction_workers,
+        correction_scope=args.correction_scope,
+        correction_heatmap=args.correction_heatmap,
+        correction_heatmap_dir=args.correction_heatmap_dir,
+        other_islands_method=args.other_islands_method,
+        diloco_lr=args.diloco_lr,
+        diloco_momentum=args.diloco_momentum,
+        diloco_nesterov_period=args.diloco_nesterov_period,
     )
 
     # Replicas read these from the environment (launchers export them).

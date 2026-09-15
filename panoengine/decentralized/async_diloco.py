@@ -359,6 +359,23 @@ class _GraceBatch:
     pool_speed: float = 0.0                     # DyLU pool speed after step
 
 
+def _mean_pseudo_grads(
+    grads_list: List[Dict[str, torch.Tensor]]
+) -> Dict[str, torch.Tensor]:
+    """``G = mean(G_1, ..., G_K)`` over one true-sync round's K arrivals.
+
+    Mirrors ``SyncExperiment.synchronize``'s ``sync_gradient`` in
+    archive/heloco_stable_v2.py (``torch.stack(...).mean(dim=0)`` per
+    parameter), just keyed by parameter name instead of positional list
+    order.
+    """
+    names = grads_list[0].keys()
+    return {
+        name: torch.stack([g[name] for g in grads_list], dim=0).mean(dim=0)
+        for name in names
+    }
+
+
 class AsyncDiLoCoServer:
     """
     Central parameter server for AsyncDiLoCo.
@@ -435,6 +452,7 @@ class AsyncDiLoCoServer:
         checkpoint_path: Optional[str] = None,
         checkpoint_every: int = 10,
         num_fragments: int = 1,
+        sync_workers: int = 0,
     ) -> None:
         """
         Args:
@@ -515,11 +533,35 @@ class AsyncDiLoCoServer:
                 the workers' ``num_fragments``. 1 (default) is the legacy
                 whole-model protocol. Incompatible with ``grace_period`` > 0
                 (grace batches whole-model gradient dicts).
+            sync_workers: TRUE round-based synchronous mode. When > 0, a
+                grace batch closes only once exactly ``sync_workers``
+                pseudo-gradients have arrived (never on a wall-clock
+                deadline), and the K arrivals are combined into ONE outer
+                step on their MEAN — not K sequential per-worker steps —
+                mirroring ``SyncExperiment`` in archive/heloco_stable_v2.py
+                (all K workers dispatched from the same global model, wait
+                for all K pseudo-gradients, G = mean(G_1..G_K), exactly one
+                server outer-optimizer step, broadcast). 0 (default) keeps
+                the historical asynchronous behavior (including
+                ``grace_period`` > 0's deadline-based, per-worker-stepped
+                batching). Mutually exclusive with ``grace_period`` > 0 and
+                with ``num_fragments`` > 1 (true sync always aggregates the
+                whole model).
         """
         if num_fragments > 1 and grace_period > 0.0:
             raise ValueError(
                 "fragment-wise sync (num_fragments > 1) is incompatible with "
                 "grace_period batching"
+            )
+        if sync_workers > 0 and grace_period > 0.0:
+            raise ValueError(
+                "sync_workers (true round-based sync) is incompatible with "
+                "grace_period (deadline-based async batching) -- pick one"
+            )
+        if sync_workers > 0 and num_fragments > 1:
+            raise ValueError(
+                "sync_workers (true round-based sync) requires num_fragments "
+                "== 1 (whole-model aggregation every round)"
             )
         self._lock = threading.Lock()
         self._model = model
@@ -545,6 +587,7 @@ class AsyncDiLoCoServer:
 
         self._quantize: bool = should_quantize
         self._grace_period: float = grace_period
+        self._sync_workers: int = int(sync_workers or 0)
         self._grace_batch: Optional[_GraceBatch] = None
         self._grace_cond: threading.Condition = threading.Condition()
         self._dylu_H: int = dylu_H
@@ -577,7 +620,12 @@ class AsyncDiLoCoServer:
         # fragment's next commit (K concurrent syncs no longer cost K
         # model-size clones; the caches sum to at most one model copy).
         # P=1: key 0 is the whole model — the legacy behavior exactly.
-        self._snapshot_cache: Dict[int, Tuple[int, torch.Tensor]] = {}
+        # Keyed by (fragment, variant) -- variant lets subclasses (HeLoCo's
+        # "diloco" other_islands_method) cache more than one snapshot
+        # CONTENT per fragment/revision (look-ahead vs. plain params). The
+        # base class's constant "" variant makes this behave exactly like a
+        # fragment-only key.
+        self._snapshot_cache: Dict[Tuple[int, str], Tuple[int, torch.Tensor]] = {}
 
         self._checkpoint_path: Optional[str] = checkpoint_path
         self._checkpoint_every: int = checkpoint_every
@@ -627,10 +675,13 @@ class AsyncDiLoCoServer:
                     # Streaming read (grace off): land the body in the shared
                     # persistent buffers instead of fresh whole-model
                     # allocations — see _stream_body_into_bufs. Grace batching
-                    # holds several workers' gradients at once, so it keeps the
-                    # materializing read below.
+                    # AND true round-based sync (sync_workers > 0) both hold
+                    # several workers' PRIVATE gradients at once (to average
+                    # them), so both keep the materializing read below.
                     use_streaming = (
-                        is_full_sync and server_ref._grace_period == 0.0
+                        is_full_sync
+                        and server_ref._grace_period == 0.0
+                        and server_ref._sync_workers == 0
                     )
                     fragment: Optional[int] = None
                     if is_full_sync:
@@ -700,8 +751,11 @@ class AsyncDiLoCoServer:
                             raise ValueError(
                                 f"unsupported wire dtype {wire_dtype!r}"
                             )
-                    _srv_t1 = time.monotonic()
-                    server_decode_ms = int((_srv_t1 - _srv_t0) * 1000)
+                    if is_full_sync:
+                        _srv_t1 = time.monotonic()
+                        server_decode_ms = int((_srv_t1 - _srv_t0) * 1000)
+                    else:
+                        server_decode_ms = 0
 
                     if use_streaming:
                         # Shared buffers: read + apply as one exclusive
@@ -721,6 +775,7 @@ class AsyncDiLoCoServer:
                                 flat_grads=None,
                                 pseudo_grads=stream_bufs,
                                 fragment=fragment,
+                                island_id=int(header.get("island_id", -1)),
                             )
                     else:
                         resp, snapshot_flat = server_ref._handle_sync(
@@ -729,6 +784,7 @@ class AsyncDiLoCoServer:
                             baseline_revision=int(
                                 header.get("baseline_revision", 0)
                             ),
+                            island_id=int(header.get("island_id", -1)),
                             flat_grads=flat_grads,
                             fragment=fragment,
                         )
@@ -1116,49 +1172,80 @@ class AsyncDiLoCoServer:
             offset += numel
         return out
 
-    def _frag_snapshot_locked(self, fragment: int) -> torch.Tensor:
+    def _snapshot_variant(self, island_id: int) -> str:
+        """Cache-key component distinguishing different snapshot CONTENTS the
+        same fragment/revision can produce for different pulling workers.
+
+        The base class only ever builds one variant (plain params), so this
+        is a constant. HeLoCoServer overrides it: a HeLoCo-selected island
+        gets the look-ahead snapshot while a true-DiLoCo island (
+        ``other_islands_method == "diloco"``) gets the plain snapshot --
+        both at the SAME revision -- so the cache must not conflate them.
+        """
+        return ""
+
+    def _frag_snapshot_locked(
+        self, fragment: int, island_id: int = -1
+    ) -> torch.Tensor:
         """One fragment's flat snapshot, built at most once per commit TO THAT
         FRAGMENT (a commit only moves its own fragment's params and momentum,
         so other fragments' cached snapshots stay valid — the caches sum to at
-        most one model copy). Must hold ``self._lock``."""
-        cached = self._snapshot_cache.get(fragment)
+        most one model copy) AND per snapshot variant (see
+        :meth:`_snapshot_variant`). Must hold ``self._lock``.
+        """
+        variant = self._snapshot_variant(island_id)
+        cache_key = (fragment, variant)
+        cached = self._snapshot_cache.get(cache_key)
         if cached is not None:
             return cached[1]
         names = self._frag_names(fragment)
-        snap = self._build_snapshot_locked(names)
+        snap = self._build_snapshot_locked(names, island_id)
         flat = torch.cat(
             [snap[name].detach().reshape(-1).float() for name in names]
         )
-        self._snapshot_cache[fragment] = (self._revision, flat)
+        self._snapshot_cache[cache_key] = (self._revision, flat)
         return flat
 
     def _snapshot_flat(
-        self, fragment: Optional[int] = None
+        self, fragment: Optional[int] = None, island_id: int = -1
     ) -> Tuple[torch.Tensor, int]:
         """
         Return ``(flat_params, revision)`` — one fragment's slice, or the
         whole model when ``fragment`` is None (pull-only requests and the
         P=1 legacy protocol, where fragment 0 IS the whole model).
+
+        ``island_id`` (the pulling worker's island index, -1 if unknown) is
+        threaded through to :meth:`_frag_snapshot_locked` for island-aware
+        subclasses; the base class ignores it.
         """
         with self._lock:
             if fragment is not None or self._num_fragments == 1:
-                return self._frag_snapshot_locked(fragment or 0), self._revision
+                return (
+                    self._frag_snapshot_locked(fragment or 0, island_id),
+                    self._revision,
+                )
             flat = torch.cat(
                 [
-                    self._frag_snapshot_locked(f)
+                    self._frag_snapshot_locked(f, island_id)
                     for f in range(self._num_fragments)
                 ]
             )
             return flat, self._revision
 
     def _build_snapshot_locked(
-        self, names: List[str]
+        self, names: List[str], island_id: int = -1
     ) -> Dict[str, torch.Tensor]:
         """
         Parameters to send back to workers, restricted to ``names`` (one
         fragment's slice, or all parameters). Must be called with
         ``self._lock`` held. Subclasses may override (e.g. HeLoCo's
         look-ahead shift).
+
+        ``island_id`` (the pulling worker's island index, -1 if unknown) is
+        threaded through for island-aware subclasses (HeLoCoServer's
+        ``other_islands_method == "diloco"`` path, which sends non-selected
+        islands the plain snapshot rather than the HeLoCo look-ahead one);
+        the base class ignores it.
         """
         return {name: self._params_by_name[name].data for name in names}
 
@@ -1167,7 +1254,10 @@ class AsyncDiLoCoServer:
     # ------------------------------------------------------------------ #
 
     def _commit_step_locked(
-        self, grads: Dict[str, torch.Tensor], fragment: int = 0
+        self,
+        grads: Dict[str, torch.Tensor],
+        fragment: int = 0,
+        optimizer: Optional[optim.Optimizer] = None,
     ) -> None:
         """Apply one outer step over exactly the parameters in ``grads`` (one
         fragment's, or all of them). Must be called with ``self._lock`` held.
@@ -1175,25 +1265,47 @@ class AsyncDiLoCoServer:
         ``zero_grad()`` leaves every other parameter's ``.grad`` as None and
         both outer optimizers skip None grads, so a single optimizer steps one
         fragment natively — momentum is per-parameter state.
+
+        ``optimizer`` defaults to ``self._outer_optimizer``; subclasses that
+        maintain a SECOND outer optimizer over the same shared parameters
+        (e.g. HeLoCoServer's true-DiLoCo path for non-selected islands, which
+        must keep its own ``DelayedNesterovOptimizer`` momentum state
+        separate from HeLoCo's) pass it explicitly. Each ``optim.Optimizer``
+        instance owns its own ``.state`` dict keyed by parameter object, so
+        two optimizer instances sharing the same ``nn.Parameter``s never mix
+        momentum buffers.
         """
+        optimizer = optimizer if optimizer is not None else self._outer_optimizer
         with torch.no_grad():
             for name, g in grads.items():
                 p = self._params_by_name[name]
                 p.grad = g.to(p.dtype)
-        self._outer_optimizer.step()
-        self._outer_optimizer.zero_grad()
+        optimizer.step()
+        optimizer.zero_grad()
         self._revision += 1
         self._applied_pushes += 1
         self._last_step_time = time.time()
-        self._snapshot_cache.pop(fragment, None)
+        # Cache keys are (fragment, variant) -- invalidate every variant
+        # cached for this fragment (typically 0 or 1 entries; up to a
+        # handful under HeLoCo's "diloco" other_islands_method, which caches
+        # a look-ahead AND a plain variant per fragment).
+        for key in [k for k in self._snapshot_cache if k[0] == fragment]:
+            self._snapshot_cache.pop(key, None)
 
     def _apply_one(
-        self, pseudo_grads: Dict[str, torch.Tensor], fragment: int = 0
+        self,
+        pseudo_grads: Dict[str, torch.Tensor],
+        fragment: int = 0,
+        island_id: int = -1,
     ) -> None:
         """
         Apply one worker's pseudo-gradient as one outer step. Subclasses may
         override to transform the gradient first (e.g. HeLoCo block
         correction) as long as they end with ``_commit_step_locked``.
+
+        ``island_id`` is the pushing worker's island index (-1 if unknown);
+        plain AsyncDiLoCo ignores it -- only HeLoCoServer's override uses it
+        to decide whether this push gets block correction.
         """
         with self._lock:
             self._commit_step_locked(pseudo_grads, fragment)
@@ -1296,6 +1408,59 @@ class AsyncDiLoCoServer:
             self._grace_cond.notify_all()
 
     # ------------------------------------------------------------------ #
+    # True round-based sync (--coordination-method sync)                  #
+    # ------------------------------------------------------------------ #
+
+    def _sync_accumulate_and_wait(
+        self,
+        pseudo_grads: Dict[str, torch.Tensor],
+        worker_speed: float,
+    ) -> Tuple[_GraceBatch, bool]:
+        """Accumulate one round's pseudo-grads and wait for all K workers.
+
+        Unlike :meth:`_grace_accumulate_and_wait` (deadline-based: closes on
+        a wall-clock timeout and applies each arrival as its own outer
+        step), this closes the round ONLY once exactly ``self._sync_workers``
+        pushes have arrived -- the ``all K workers start from same global
+        model -> wait for all K pseudo-gradients`` step of the archived
+        ``SyncExperiment.synchronize`` loop (archive/heloco_stable_v2.py).
+        Reuses the ``_GraceBatch``/``_grace_cond`` primitives; the batch's
+        ``deadline`` field is unused on this path.
+        """
+        i_am_processor = False
+        with self._grace_cond:
+            if self._grace_batch is None:
+                self._grace_batch = _GraceBatch(
+                    grads_list=[pseudo_grads],
+                    speeds=[worker_speed],
+                    deadline=float("inf"),
+                )
+            else:
+                self._grace_batch.grads_list.append(pseudo_grads)
+                self._grace_batch.speeds.append(worker_speed)
+            # Wake every thread blocked in the wait loop below so each can
+            # re-check whether this arrival just completed the round of K.
+            self._grace_cond.notify_all()
+
+            batch = self._grace_batch
+
+            while not (batch.done or batch.claimed):
+                if len(batch.grads_list) >= self._sync_workers:
+                    batch.claimed = True
+                    # Detach: the next round starts a fresh batch.
+                    self._grace_batch = None
+                    i_am_processor = True
+                    break
+                self._grace_cond.wait()
+
+            # Non-processor: another thread claimed it — wait for it to publish
+            if not i_am_processor:
+                while not batch.done:
+                    self._grace_cond.wait()
+
+        return batch, i_am_processor
+
+    # ------------------------------------------------------------------ #
     # Sync processing                                                     #
     # ------------------------------------------------------------------ #
 
@@ -1308,6 +1473,7 @@ class AsyncDiLoCoServer:
         flat_grads: Optional[torch.Tensor],
         pseudo_grads: Optional[Dict[str, torch.Tensor]] = None,
         fragment: Optional[int] = None,
+        island_id: int = -1,
     ) -> Tuple[Dict[str, Any], torch.Tensor]:
         """
         Process one worker sync (transport-independent core; the HTTP handler
@@ -1347,6 +1513,41 @@ class AsyncDiLoCoServer:
                 )
                 new_steps = self._dylu_H
                 snapshot_flat, revision = self._snapshot_flat(fragment)
+            elif self._sync_workers > 0:
+                # TRUE synchronous round: block until all K workers of this
+                # round have pushed, then apply exactly ONE outer step on
+                # their mean -- see SyncExperiment.synchronize in
+                # archive/heloco_stable_v2.py.
+                batch, i_am_processor = self._sync_accumulate_and_wait(
+                    pseudo_grads, worker_speed
+                )
+
+                if i_am_processor:
+                    try:
+                        with self._lock:
+                            self._record_speeds_locked(batch.speeds)
+                            batch.pool_speed = self._pool_speed_locked()
+
+                        mean_grads = _mean_pseudo_grads(batch.grads_list)
+                        self._apply_one(mean_grads)  # exactly one outer step
+
+                        batch.snapshot_flat, batch.revision = self._snapshot_flat()
+                    except Exception as exc:
+                        self._grace_batch_publish(
+                            batch, error=f"{type(exc).__name__}: {exc}"
+                        )
+                        raise
+                    self._grace_batch_publish(batch)
+                    self._maybe_checkpoint()
+
+                if batch.error is not None:
+                    raise RuntimeError(
+                        f"sync round processing failed: {batch.error}"
+                    )
+
+                applied = True
+                snapshot_flat, revision = batch.snapshot_flat, batch.revision
+                new_steps = self._dylu_steps(worker_speed, batch.pool_speed)
             elif self._grace_period > 0.0:
                 batch, i_am_processor = self._grace_accumulate_and_wait(
                     pseudo_grads, worker_speed
@@ -1387,13 +1588,15 @@ class AsyncDiLoCoServer:
                 with self._lock:
                     self._record_speeds_locked([worker_speed])
                     pool_speed = self._pool_speed_locked()
-                self._apply_one(pseudo_grads, fragment or 0)
+                self._apply_one(pseudo_grads, fragment or 0, island_id=island_id)
                 applied = True
-                snapshot_flat, revision = self._snapshot_flat(fragment)
+                snapshot_flat, revision = self._snapshot_flat(
+                    fragment, island_id=island_id
+                )
                 new_steps = self._dylu_steps(worker_speed, pool_speed)
                 self._maybe_checkpoint()
         else:
-            snapshot_flat, revision = self._snapshot_flat()
+            snapshot_flat, revision = self._snapshot_flat(island_id=island_id)
             new_steps = self._dylu_H
 
         return (
@@ -1718,6 +1921,13 @@ class AsyncDiLoCo:
         # process must register under a distinct id, hostname-prefixed for
         # readable logs.
         self._worker_id: str = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+        # Island index this worker belongs to (run_heloco.py exports it as
+        # $PF_ISLAND_ID -- same pattern as PF_ISLAND_SLOWNESS_FACTOR). Not a
+        # torchtitan CLI option. Carried in every push header so the server
+        # (HeLoCoServer) can decide whether this worker's pushes get HeLoCo
+        # correction (``correction_workers``) and can label heatmap rows.
+        # -1 when unset/unknown (correction defaults to "on" in that case).
+        self._island_id: int = int(os.environ.get("PF_ISLAND_ID", "-1"))
         # Replica mode: the LEAD is the replica's one worker identity — a
         # follower heartbeat would register the replica K times, and DyLU /
         # grace batching / rho=1/sqrt(K) all assume workers are replicas.
@@ -2589,6 +2799,7 @@ class AsyncDiLoCo:
             "flag": int(flag),
             "speed": speed,
             "baseline_revision": self._baseline_revision,
+            "island_id": self._island_id,
         }
         if self._wire_bf16:
             # Download negotiation: an old server ignores this key and replies

@@ -56,6 +56,26 @@ steps: 50              # inner training steps per island
 seq_len: 512            # sequence length
 batch: 8                # local batch size per GPU rank
 
+# Dynamic training-token budget (tokens-per-parameter rule), e.g. Chinchilla-style
+# "N params x tokens_per_parameter" sizing:
+#   target_training_tokens = model_parameter_count * tokens_per_parameter
+# This target is the GLOBAL budget for the WHOLE distributed experiment across
+# ALL islands combined -- NOT per island (increasing `islands` does not inflate
+# the intended ratio; it only spreads the same global budget over more workers).
+#
+# When set (not null), `steps` above is IGNORED and recomputed as:
+#   tokens_per_step = batch * seq_len * gpus_per_island * islands   (one local
+#                      training step per island per round; every preset here
+#                      leaves training.global_batch_size unset, i.e. 1
+#                      gradient-accumulation step)
+#   steps = ceil(target_training_tokens / tokens_per_step)
+#
+# Set to null to disable and use the manually configured `steps` above unchanged
+# (the two are never applied together).
+#   tokens_per_parameter: 20   -> e.g. 15M model => ~300M total training tokens
+#   tokens_per_parameter: null -> use `steps` as configured (default)
+tokens_per_parameter: null
+
 # ================================================================ REPRODUCIBILITY
 # Random seed for Python, NumPy, PyTorch (CPU/CUDA), DataLoader shuffling, etc.
 # Same seed ensures reproducible results across runs (subject to PyTorch/CUDA limitations).
@@ -101,8 +121,8 @@ num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole 
 # fault_tolerance config has no such flag), and panoengine's AsyncDiLoCo worker
 # (panoengine/decentralized/async_diloco.py) sleeps extra time proportional to
 # (factor - 1) after every inner optimizer step.
-island_slowness_factors: [1, 1.5, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
-#island_slowness_factors: null
+#island_slowness_factors: [1, 1.5, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
+island_slowness_factors: null
 
 # Server-side outer optimizer (HeLoCo, DiLoCo, MLA)
 outer_lr: 0.7           # outer learning rate (HeLoCoOptimizer / MLAOptimizer)
@@ -113,6 +133,63 @@ should_quantize: true  # int8 pseudo-gradient upload (reduces comm)
 # MLA uses only: outer_lr, outer_momentum
 # MLA = simple momentum look-ahead on server: m <- γ·m + (1−γ)·Δ, θ <- θ − lr·(γ·m + Δ)
 # No direction correction for base MLA (that's SmartDCMLA_v2, a separate advanced variant)
+
+# ================================================================ HELOCO CORRECTION CONTROL
+# Which islands (by index, matching --fault_tolerance.replica_id / the `gpus`
+# ordering) get HeLoCo's Algorithm-2 tensor-block directional correction on
+# the parameter server. Islands NOT selected still train and communicate
+# exactly as normal (push/pull every sync_steps) -- they just bypass the
+# correction step and are committed as plain (uncorrected) async DiLoCo.
+#   all       -> every island is corrected (default; matches prior behavior)
+#   [0]       -> only island 0 is corrected; islands 1..N-1 are plain DiLoCo
+#   [0, 2]    -> islands 0 and 2 are corrected; the rest are plain DiLoCo
+#   none      -> no island is corrected (every island is plain DiLoCo)
+correction_workers: all
+
+# Granularity of the correction decision:
+#   tensorwise     -> one cosine/confidence/correction decision PER TENSOR
+#                     (Algorithm 2 exactly as published; default, unchanged
+#                     behavior)
+#   whole_gradient -> flatten the worker's entire pseudo-gradient (and the
+#                     matching momentum) into ONE logical vector and make a
+#                     SINGLE cosine/confidence/correction decision for the
+#                     whole update, applied consistently to every tensor
+correction_scope: tensorwise
+
+# When true (and correction_scope: tensorwise), record one row per
+# worker/update/tensor with the cosine similarity, correction type
+# (pass|rotate|shrink), and the (normalized) correction magnitude, so a
+# tensor/block heatmap can be regenerated after training. Written under
+# <method_log_dir>/correction_heatmap/correction_heatmap.csv. Only islands
+# selected by correction_workers produce real correction statistics; a
+# bypassed island logs nothing. With correction_scope: whole_gradient, one
+# whole-update row is logged instead of per-tensor rows.
+correction_heatmap: true
+
+# What islands NOT selected by correction_workers get instead of HeLoCo's
+# Algorithm-2 directional correction:
+#   heloco_uncorrected -> (default) still HeLoCoOptimizer/MLA update +
+#                          HeLoCo look-ahead dispatch; only the directional
+#                          correction step is skipped (ablates correction
+#                          only).
+#   diloco             -> those islands are TRUE async DiLoCo: committed
+#                          through a separate DelayedNesterovOptimizer (its
+#                          own independent momentum state -- never shares or
+#                          reuses HeLoCo's momentum) and sent the plain
+#                          global-model snapshot on pull, never the HeLoCo
+#                          look-ahead one. Selected islands are unaffected
+#                          either way (always full HeLoCo).
+# Example: correction_workers: [0], other_islands_method: diloco means
+# island 0 is full HeLoCo and islands 1..N-1 are true DiLoCo.
+other_islands_method: heloco_uncorrected
+
+# other_islands_method: diloco only -- hyperparameters for the separate
+# true-DiLoCo optimizer used by non-selected islands. null -> reuse
+# outer_lr / outer_momentum; diloco_nesterov_period null -> auto (number of
+# non-selected islands, minimum 1).
+diloco_lr: null
+diloco_momentum: null
+diloco_nesterov_period: null
 
 # ================================================================ INFRASTRUCTURE
 host: 127.0.0.1
