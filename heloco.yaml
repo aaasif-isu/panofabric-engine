@@ -108,7 +108,7 @@ island_slowness_factors: [1, 1.5, 2, 1.3]  # null = default [1.0, 1.0, ...] for 
 outer_lr: 0.7           # outer learning rate (HeLoCoOptimizer / MLAOptimizer)
 outer_momentum: 0.9     # momentum
 rho: null               # HeLoCo arrival weight; null -> auto (1/sqrt(islands))
-should_quantize: false  # int8 pseudo-gradient upload (reduces comm)
+should_quantize: true  # int8 pseudo-gradient upload (reduces comm)
 
 # MLA uses only: outer_lr, outer_momentum
 # MLA = simple momentum look-ahead on server: m <- γ·m + (1−γ)·Δ, θ <- θ − lr·(γ·m + Δ)

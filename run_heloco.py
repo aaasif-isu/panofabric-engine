@@ -357,6 +357,8 @@ def trainer_env(args, island: int, gpus: list[int], ps_addr: str, hb_addr: str) 
         "PYTORCH_ALLOC_CONF": "expandable_segments:True",
         "LOG_RANK": "0",
         "PANOENGINE_SEED": str(args.seed),
+        "PANOFABRIC_COMM_LOG_DIR": getattr(args, "comm_log_dir", ""),
+        "PANOFABRIC_METHOD": getattr(args, "outer_method", ""),
     }
     
     # For non-IID data distribution, set language for this island
@@ -935,6 +937,49 @@ def _plot_runtime_comparison(all_island_summaries: list[dict], metrics_dir: Path
     plt.close()
 
 
+# ------------------------------------------------------- communication metrics aggregation
+def _aggregate_comm_metrics(method, method_log_dir, total_wall_time_sec):
+    import csv, glob
+    comm_dir = method_log_dir / "comm_metrics"
+    total_upload = 0.0
+    total_download = 0.0
+    total_creation = 0.0
+    total_encode = 0.0
+    total_roundtrip = 0.0
+    total_srv_decode = 0.0
+    step_count = 0
+    for p in sorted(glob.glob(str(comm_dir / "comm_steps_*.csv"))):
+        with open(p) as f:
+            for row in csv.DictReader(f):
+                step_count += 1
+                try:
+                    total_upload += float(row.get("upload_mb", 0))
+                    total_download += float(row.get("download_mb", 0))
+                    total_creation += float(row.get("pseudo_grad_creation_sec", 0))
+                    total_encode += float(row.get("upload_encode_sec", 0))
+                    total_roundtrip += float(row.get("full_roundtrip_sec", 0))
+                    total_srv_decode += float(row.get("server_upload_decode_sec", 0))
+                except (ValueError, KeyError):
+                    pass
+    n = max(step_count, 1)
+    comm_dir.mkdir(parents=True, exist_ok=True)
+    with open(comm_dir / "communication_time_summary.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["method","total_steps","total_time_sec",
+            "total_upload_mb","total_download_mb","total_communication_mb",
+            "avg_pseudo_grad_creation_sec","total_pseudo_grad_creation_sec",
+            "avg_upload_encode_sec","total_upload_encode_sec",
+            "avg_full_roundtrip_sec","total_full_roundtrip_sec",
+            "avg_server_upload_decode_sec","total_server_upload_decode_sec"])
+        w.writerow([method, step_count, round(total_wall_time_sec,2),
+            round(total_upload,3), round(total_download,3),
+            round(total_upload+total_download,3),
+            round(total_creation/n,6), round(total_creation,6),
+            round(total_encode/n,6), round(total_encode,6),
+            round(total_roundtrip/n,6), round(total_roundtrip,6),
+            round(total_srv_decode/n,6), round(total_srv_decode,6)])
+    return {"method": method}
+
 # ------------------------------------------------------- metrics collection per method
 def _collect_island_metrics(method: str, method_log_dir: Path, islands: int, 
                             seed: int, elapsed_time: float = 0.0) -> tuple[list[dict], list[dict]]:
@@ -1033,6 +1078,7 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
     # Update args to reflect the current method
     args_copy = argparse.Namespace(**vars(args))
     args_copy.outer_method = method
+    args_copy.comm_log_dir = str(method_log_dir / "comm_metrics")
     
     print(f"\n{'='*70}")
     print(f"== RUNNING METHOD: {method.upper()}")
@@ -1113,7 +1159,12 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
                 return False, time.perf_counter() - start_time
             if all(c == 0 for c in codes):
                 print(f"== {method.upper()} completed successfully")
-                return True, time.perf_counter() - start_time
+                elapsed = time.perf_counter() - start_time
+                try:
+                    _aggregate_comm_metrics(method, method_log_dir, elapsed)
+                except Exception as exc:
+                    print(f"== comm metrics aggregation failed: {exc}", file=sys.stderr)
+                return True, elapsed
             time.sleep(1.0)
     finally:
         shutdown(roles)

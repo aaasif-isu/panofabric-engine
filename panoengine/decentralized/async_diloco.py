@@ -669,6 +669,7 @@ class AsyncDiLoCoServer:
                                 f"pseudo-gradient numel mismatch: got {numel}, "
                                 f"expected {expected_numel}"
                             )
+                        _srv_t0 = time.monotonic()
                         if use_streaming:
                             pass  # body is read under the stream lock below
                         elif wire_dtype == "int8":
@@ -699,6 +700,8 @@ class AsyncDiLoCoServer:
                             raise ValueError(
                                 f"unsupported wire dtype {wire_dtype!r}"
                             )
+                    _srv_t1 = time.monotonic()
+                    server_decode_ms = int((_srv_t1 - _srv_t0) * 1000)
 
                     if use_streaming:
                         # Shared buffers: read + apply as one exclusive
@@ -730,6 +733,7 @@ class AsyncDiLoCoServer:
                             fragment=fragment,
                         )
 
+                    resp["server_decode_ms"] = server_decode_ms
                     resp["numel"] = snapshot_flat.numel()
                     # bf16 download, sent only to a client that
                     # advertised `accept_dtype` in its push header, and the
@@ -1633,6 +1637,10 @@ class AsyncDiLoCo:
         self._comm_seconds_total = 0.0
         self._comm_bytes_up_total = 0
         self._comm_bytes_down_total = 0
+        self._csv_dir: str = os.environ.get("PANOFABRIC_COMM_LOG_DIR", "")
+        self._method_name: str = os.environ.get("PANOFABRIC_METHOD", "")
+        self._perf_t0: float = time.perf_counter()
+        self._cumulative_bytes_total: int = 0
         self._hooks: List[Any] = []
         self._window_start: float = 0.0
         # Replica mode (see the docstring): rank 0 of `replica_pg` is the
@@ -1644,6 +1652,8 @@ class AsyncDiLoCo:
         self._lead_rank: Optional[int] = (
             None if replica_pg is None else dist.get_global_rank(replica_pg, 0)
         )
+        if self._csv_dir and self._is_lead:
+            os.makedirs(self._csv_dir, exist_ok=True)
         backup = backup_device or torch.device("cpu")
         # The wire layout: DTensor .shape/.numel() are the GLOBAL shape, so
         # these match the server's own named_parameters() layout even when
@@ -2044,7 +2054,8 @@ class AsyncDiLoCo:
         return torch.cat(grad_chunks)
 
     def _launch_push(
-        self, fragment: int, speed: float, flat_grads: torch.Tensor
+        self, fragment: int, speed: float, flat_grads: torch.Tensor,
+        grad_creation_sec: float = 0.0
     ) -> None:
         """Start one fragment exchange in the background. The 503 busy-retry
         loop lives inside _session_roundtrip and works unchanged there."""
@@ -2055,6 +2066,7 @@ class AsyncDiLoCo:
                 inflight.result = self._session_roundtrip(
                     flag=1.0, speed=speed, flat_grads=flat_grads,
                     fragment=fragment,
+                    grad_creation_sec=grad_creation_sec,
                 )
             except BaseException as exc:  # surfaced at join, never raised here
                 inflight.error = exc
@@ -2142,7 +2154,10 @@ class AsyncDiLoCo:
         fragment = self._frag_idx
         self._frag_idx = (fragment + 1) % self._num_fragments
         speed = self._window_speed()
-        self._launch_push(fragment, speed, self._fragment_pseudo_grad(fragment))
+        _t_grad0 = time.monotonic()
+        flat_grads = self._fragment_pseudo_grad(fragment)
+        grad_creation_sec = time.monotonic() - _t_grad0
+        self._launch_push(fragment, speed, flat_grads, grad_creation_sec=grad_creation_sec)
 
     # ------------------------------------------------------------------ #
     # Replica mode (replica_pg): one PS session per multi-rank replica    #
@@ -2501,7 +2516,13 @@ class AsyncDiLoCo:
     _WIRE_ITEMSIZE = {"float32": 4, "bfloat16": 2, "delta_int8": 1, "int8": 1}
 
     def _emit_comm_metrics(self, seconds: float, bytes_up: int,
-                           bytes_down: int, fragment: Optional[int]) -> None:
+                           bytes_down: int, fragment: Optional[int],
+                           applied: bool = False,
+                           revision: int = 0,
+                           grad_creation_sec: float = 0.0,
+                           encode_sec: float = 0.0,
+                           roundtrip_sec: float = 0.0,
+                           server_decode_sec: float = 0.0) -> None:
         """One `PFMETRICS {json}` line per exchange.
 
         The control plane parses any PFMETRICS payload verbatim (numeric values,
@@ -2531,6 +2552,17 @@ class AsyncDiLoCo:
         if fragment is not None:
             payload["comm/fragment"] = fragment
         logger.info("PFMETRICS %s", json.dumps(payload, sort_keys=True))
+        if self._csv_dir and self._is_lead:
+            import csv as _csv
+            self._cumulative_bytes_total += bytes_up + bytes_down
+            ct = time.perf_counter() - self._perf_t0
+            p = os.path.join(self._csv_dir, f"comm_steps_{self._worker_id}.csv")
+            hdr = not os.path.exists(p)
+            with open(p, "a", newline="") as f:
+                w = _csv.writer(f)
+                if hdr:
+                    w.writerow(["method","global_outer_step","worker_id","applied","cumulative_time_sec","upload_mb","download_mb","total_mb","cumulative_total_mb","pseudo_grad_creation_sec","upload_encode_sec","full_roundtrip_sec","server_upload_decode_sec"])
+                w.writerow([self._method_name, revision, self._worker_id, int(applied), round(ct,6), round(bytes_up/1e6,6), round(bytes_down/1e6,6), round((bytes_up+bytes_down)/1e6,6), round(self._cumulative_bytes_total/1e6,6), round(grad_creation_sec,6), round(encode_sec,6), round(roundtrip_sec,6), round(server_decode_sec,6)])
 
     def _session_roundtrip(
         self,
@@ -2538,6 +2570,7 @@ class AsyncDiLoCo:
         speed: float,
         flat_grads: Optional[torch.Tensor],
         fragment: Optional[int] = None,
+        grad_creation_sec: float = 0.0,
     ) -> Tuple[torch.Tensor, int, int, bool]:
         """
         One push/pull cycle: a single HTTP POST to the server's /sync
@@ -2579,6 +2612,7 @@ class AsyncDiLoCo:
             if fragment is None
             else self._frag_numels[fragment]
         )
+        _t_enc0 = time.monotonic()
         body = b""
         if flat_grads is not None:
             header["numel"] = flat_grads.numel()
@@ -2604,6 +2638,7 @@ class AsyncDiLoCo:
                 body = _tensor_to_bytes(flat_grads)
 
         payload = (json.dumps(header) + "\n").encode() + body
+        encode_sec = time.monotonic() - _t_enc0
 
         # 503 means "all session slots busy, come back" (the server's
         # max_sessions semaphore), NOT a failure: WAIT AND RETRY THE SAME PUSH.
@@ -2622,7 +2657,7 @@ class AsyncDiLoCo:
             # Times the BLOCKING round trip: upload, server-side outer step, and
             # the download the worker then adopts. With num_fragments=1 this is
             # exactly the training stall at a boundary.
-            _comm_t0 = time.monotonic()
+            _t_rtt0 = time.monotonic()
             try:
                 with urllib.request.urlopen(
                     request, timeout=self._sync_timeout
@@ -2675,11 +2710,19 @@ class AsyncDiLoCo:
                     _down = numel * self._WIRE_ITEMSIZE.get(_dt, 4)
                     if _dt == "delta_int8":
                         _down += len(self._param_numels) * 4
+                    roundtrip_sec = time.monotonic() - _t_rtt0
+                    server_decode_sec = resp_header.get("server_decode_ms", 0) / 1000.0
                     self._emit_comm_metrics(
-                        time.monotonic() - _comm_t0,
+                        roundtrip_sec,
                         len(payload),
-                        _down + len(json.dumps(resp_header)) + 1,   # + its header line
+                        _down + len(json.dumps(resp_header)) + 1,
                         fragment,
+                        applied=bool(resp_header.get("applied", False)),
+                        revision=resp_header.get("revision", 0),
+                        grad_creation_sec=grad_creation_sec,
+                        encode_sec=encode_sec,
+                        roundtrip_sec=roundtrip_sec,
+                        server_decode_sec=server_decode_sec,
                     )
                 break
             except urllib.error.HTTPError as exc:
@@ -2793,6 +2836,7 @@ class AsyncDiLoCo:
         need_local = self._fragment_update_alpha > 0.0
         local_params: Dict[str, torch.Tensor] = {}
         grad_chunks: List[torch.Tensor] = []
+        _t_grad0 = time.monotonic()
         with torch.no_grad():
             # self._param_names (fixed insertion-order list) guarantees the
             # flat layout matches the server's named_parameters() order.
@@ -2804,9 +2848,11 @@ class AsyncDiLoCo:
                     (self._global_params[name] - local_cpu).reshape(-1).float()
                 )
         flat_grads = torch.cat(grad_chunks)
+        grad_creation_sec = time.monotonic() - _t_grad0
 
         flat_params, new_steps, revision, applied = self._session_roundtrip(
-            flag=1.0, speed=speed, flat_grads=flat_grads
+            flag=1.0, speed=speed, flat_grads=flat_grads,
+            grad_creation_sec=grad_creation_sec
         )
 
         if not applied:
