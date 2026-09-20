@@ -41,3 +41,4 @@ Sessionx.vim
 # venv (local virtual environment)
 heloco/
 .venv/
+nohup.out
