@@ -482,6 +482,7 @@ def ps_cmd(args) -> list[str]:
         "--port", str(args.ps_port),
         "--lr", str(args.outer_lr),
         "--momentum", str(args.outer_momentum),
+        "--seed", str(args.seed),
     ]
     if args.outer_method == "heloco":
         cmd += ["--rho", f"{rho:.6f}"]
@@ -532,6 +533,7 @@ def trainer_cmd(args, island: int) -> list[str]:
     # Mirrors run_train.sh. The trainer-side strategy is always 'heloco' (=
     # AsyncDiLoCo talking to the PS); --outer-method only changes the server.
     cmd = [
+        
         str(BIN_DIR / "torchrun"),
         f"--nproc_per_node={args.gpus_per_island}",
         "--nnodes", "1",
@@ -541,9 +543,11 @@ def trainer_cmd(args, island: int) -> list[str]:
         "--local-ranks-filter", "0",
         "--role", "rank",
         "--tee", "3",
-        "-m", "torchtitan.train",
+        # "-m", "torchtitan.train",
+        str(REPO_ROOT / "torchtitan_step0_train.py"),
         "--module", args.module,
         "--config", args.config,
+        f"--debug.seed={args.seed}",
         f"--hf_assets_path={args.hf_assets}",
         f"--dump_folder={Path(args.log_dir) / f'island-{island}'}",
         f"--dataloader.dataset={args.dataset}",
@@ -1058,19 +1062,44 @@ def _create_evaluation_log(methods_data: dict[str, list[list[dict]]], log_path: 
         # Summary statistics
         for method in sorted(set(r['method'] for r in all_records)):
             method_records = [r for r in all_records if r['method'] == method]
+
             if method_records:
-                first_loss = float(method_records[0]['loss'])
-                last_loss = float(method_records[-1]['loss'])
-                first_ppl = float(method_records[0]['perplexity'])
-                last_ppl = float(method_records[-1]['perplexity'])
-                
+                # Step 0 records = starting loss across islands
+                start_records = [
+                    r for r in method_records
+                    if r['step'] == 0
+                ]
+
+                # Final checkpoint records
+                final_step = max(r['step'] for r in method_records)
+                final_records = [
+                    r for r in method_records
+                    if r['step'] == final_step
+                ]
+
+                avg_start_loss = sum(
+                    float(r['loss']) for r in start_records
+                ) / len(start_records)
+
+                avg_start_ppl = math.exp(avg_start_loss)
+
+                avg_final_loss = sum(
+                    float(r['loss']) for r in final_records
+                ) / len(final_records)
+
+                avg_final_ppl = math.exp(avg_final_loss)
+
                 f.write(f"Method: {method}\n")
-                f.write(f"  Records: {len(method_records)}\n")
-                f.write(f"  First Checkpoint Loss: {first_loss:.6f} (PPL: {first_ppl:.6f})\n")
-                f.write(f"  Last Checkpoint Loss:  {last_loss:.6f} (PPL: {last_ppl:.6f})\n")
-                f.write(f"  Loss improvement: {first_loss - last_loss:.6f}\n")
-                f.write(f"  PPL improvement: {first_ppl - last_ppl:.6f}\n")
+                f.write(f"  Islands: {len(final_records)}\n")
+                f.write(f"  Average Start Loss: {avg_start_loss:.6f}\n")
+                f.write(f"  Average Start PPL:  {avg_start_ppl:.6f}\n")
+                f.write(f"  Final Step: {final_step}\n")
+                f.write(f"  Average Final Loss: {avg_final_loss:.6f}\n")
+                f.write(f"  Average Final PPL:  {avg_final_ppl:.6f}\n")
+                f.write(f"  Loss Improvement:   {avg_start_loss - avg_final_loss:.6f}\n")
                 f.write("\n")
+
+
 
 
 def _plot_comparison(methods_data: dict[str, list[list[dict]]], png_path: Path) -> None:
@@ -1474,6 +1503,10 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
     # Update args to reflect the current method
     args_copy = argparse.Namespace(**vars(args))
     args_copy.outer_method = method
+    if method == "diloco" and args.coordination_method == "async":
+        args_copy.outer_lr = 0.07
+    else:
+        args_copy.outer_lr = args.outer_lr
     args_copy.comm_log_dir = str(method_log_dir / "comm_metrics")
     
     print(f"\n{'='*70}")
@@ -1575,6 +1608,16 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
 
 
 def build_dynamic_log_dir(base_log_dir: Path, args: argparse.Namespace) -> Path:
+    config_name = args.config.lower().replace(" ", "_")
+
+    dynamic_name = (
+        f"{base_log_dir.name}_{args.coordination_method}_"
+        f"{config_name}_{args.data_distribution}_{args.steps}"
+    )
+
+    return base_log_dir.parent / dynamic_name
+
+def build_dynamic_log_dir_old(base_log_dir: Path, args: argparse.Namespace) -> Path:
     """Build a dynamic log directory name based on configuration parameters.
     
     Pattern: heloco_run_{coordination_method}_{config}_{data_distribution}_{steps}
@@ -1636,18 +1679,27 @@ def main() -> int:
         print(f"   Tokens per step        : {tokens_per_step:,}")
         print(f"   Calculated steps       : {steps:,}")
 
-    # Build dynamic log directory or use the provided one
-    base_log_dir_arg = Path(args.log_dir)
+    # # Build dynamic log directory or use the provided one
+    # base_log_dir_arg = Path(args.log_dir)
     
-    # Check if the user provided a custom log_dir or using the default
-    # If using default pattern "outputs/heloco_run", build dynamic name
-    if base_log_dir_arg.name == "heloco_run" and len(base_log_dir_arg.parts) <= 2:
-        # Default pattern detected, build dynamic directory
-        base_log_dir = build_dynamic_log_dir(base_log_dir_arg, args)
-        print(f"== using dynamic log directory: {base_log_dir}")
-    else:
-        # Custom log directory provided, use as-is
-        base_log_dir = REPO_ROOT / args.log_dir
+    # # Check if the user provided a custom log_dir or using the default
+    # # If using default pattern "outputs/heloco_run", build dynamic name
+    # if base_log_dir_arg.name == "heloco_run" and len(base_log_dir_arg.parts) <= 2:
+    #     # Default pattern detected, build dynamic directory
+    #     base_log_dir = build_dynamic_log_dir(base_log_dir_arg, args)
+    #     print(f"== using dynamic log directory: {base_log_dir}")
+    # else:
+    #     # Custom log directory provided, use as-is
+    #     base_log_dir = REPO_ROOT / args.log_dir
+
+    base_log_dir_arg = Path(args.log_dir)
+
+    if not base_log_dir_arg.is_absolute():
+        base_log_dir_arg = REPO_ROOT / base_log_dir_arg
+
+    base_log_dir = build_dynamic_log_dir(base_log_dir_arg, args)
+
+    print(f"== using dynamic log directory: {base_log_dir}")
     
     gpus = preflight(args)
 

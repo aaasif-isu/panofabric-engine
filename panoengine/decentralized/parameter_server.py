@@ -823,6 +823,7 @@ def main() -> None:
     parser.add_argument("--module", type=str, default="decentralized_rl")
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--hf_assets_path", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     from torchtitan.config.manager import ConfigManager
@@ -835,6 +836,7 @@ def main() -> None:
         os.environ["RL_HF_ASSETS_PATH"] = args.hf_assets_path
         cfg_args.append(f"--hf_assets_path={args.hf_assets_path}")
     replica_cfg = ConfigManager().parse_args(cfg_args)
+    torch.manual_seed(args.seed)
     model = build_global_model(replica_cfg.model_spec, replica_cfg.hf_assets_path)
     param_names, _, _ = param_metadata(model)
 
