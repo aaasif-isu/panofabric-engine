@@ -748,7 +748,7 @@ def export_metrics(log_dir: Path, islands: int, data_distribution: str = "iid",
     model_suffix = f"_{model_name}" if model_name else ""
     file_suffix = f"{mode_suffix}{model_suffix}"
     
-    lines = [f"{'island':<10}{'steps':>6}{'first_step_loss':>16}"
+    lines = [f"{'island':<10}{'steps':>6}{'first_train_loss':>16}"
              f"{'last_step_loss':>15}{'min_loss':>10}{'last_ppl':>10}{'exchanges':>11}"]
     island_data: dict[int, list[dict]] = {}
     for i in range(islands):
@@ -774,6 +774,162 @@ def export_metrics(log_dir: Path, islands: int, data_distribution: str = "iid",
     print(summary)
     print(f"== per-step CSVs & plots saved to: {out}/")
     return island_data
+# ---------------------------------------------------------- correction heatmap PNGs
+def _generate_correction_heatmaps(method_log_dir: Path) -> None:
+    """Generate per-island heatmap PNGs from ``correction_heatmap.csv``.
+
+    One PNG per island: ``island_<i>_heatmap.png`` in the same directory.
+    With ``correction_scope: whole_gradient``, one whole-update row is
+    written per push, so a simpler bar chart is produced per island instead
+    of a 2-D tensor/update heatmap.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import csv as _csv
+    except ImportError:
+        return  # matplotlib not available
+
+    csv_path = method_log_dir / "correction_heatmap" / "correction_heatmap.csv"
+    if not csv_path.exists():
+        return
+    out_dir = csv_path.parent
+
+    # Read rows, group by island
+    island_rows: dict[int, list[dict]] = {}
+    with open(csv_path, newline="") as f:
+        for row in _csv.DictReader(f):
+            try:
+                iid = int(row["island_id"])
+            except (ValueError, KeyError):
+                continue
+            island_rows.setdefault(iid, []).append(row)
+
+    if not island_rows:
+        return
+
+    for island_id, rows in sorted(island_rows.items()):
+        # Collect (exchange, tensor) → normalized_correction_magnitude
+        exchanges: list[int] = []
+        tensors: list[str] = []
+        ex_set: set[int] = set()
+        t_set: list[str] = []
+
+        for r in rows:
+            try:
+                ex = int(r["exchange"])
+            except (ValueError, KeyError):
+                continue
+            t = r.get("tensor", "?")
+            if ex not in ex_set:
+                ex_set.add(ex)
+                exchanges.append(ex)
+            if t not in t_set:
+                t_set.append(t)
+
+        tensors = t_set  # preserve insertion order
+        exchanges.sort()
+
+        if len(exchanges) == 1 and len(tensors) <= 1:
+            # whole_gradient mode or single data point — bar chart
+            _plot_correction_bar(island_id, rows, out_dir)
+            continue
+
+        # Build matrix (tensor × exchange)
+        import numpy as np
+        idx_ex = {ex: i for i, ex in enumerate(exchanges)}
+        idx_t = {t: i for i, t in enumerate(tensors)}
+        data = np.full((len(tensors), len(exchanges)), np.nan)
+        for r in rows:
+            try:
+                ex = int(r["exchange"])
+            except (ValueError, KeyError):
+                continue
+            t = r.get("tensor", "?")
+            try:
+                val = float(r["normalized_correction_magnitude"])
+            except (ValueError, KeyError):
+                continue
+            if t in idx_t and ex in idx_ex:
+                data[idx_t[t], idx_ex[ex]] = val
+
+        # Plot heatmap
+        fig, ax = plt.subplots(figsize=(max(8, len(exchanges) * 0.25),
+                                        max(6, len(tensors) * 0.2)))
+        im = ax.imshow(data, aspect="auto", cmap="YlOrRd", vmin=0.0)
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+        cbar.set_label("normalized correction magnitude\n||corrected − original|| / (||original|| + ε)")
+
+        ax.set_xticks(range(len(exchanges)))
+        ax.set_xticklabels([str(e) for e in exchanges], rotation=90, fontsize=6)
+        ax.set_yticks(range(len(tensors)))
+        ax.set_yticklabels(tensors, fontsize=5)
+        ax.set_xlabel("Update / Exchange")
+        ax.set_ylabel("Tensor / Layer")
+        ax.set_title(f"island {island_id} — HeLoCo Correction Heatmap\n"
+                     f"({len(tensors)} tensors, {len(exchanges)} updates)")
+
+        plt.tight_layout()
+        png_path = out_dir / f"island_{island_id}_heatmap.png"
+        plt.savefig(png_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  ✓ correction heatmap: {png_path}")
+
+
+def _plot_correction_bar(island_id: int, rows: list[dict], out_dir: Path) -> None:
+    """Bar chart for whole_gradient or single-point correction data."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    names: list[str] = []
+    vals: list[float] = []
+    ctypes: list[str] = []
+    for r in rows:
+        try:
+            ex = int(r["exchange"])
+        except (ValueError, KeyError):
+            continue
+        t = r.get("tensor", "?")
+        try:
+            val = float(r["normalized_correction_magnitude"])
+        except (ValueError, KeyError):
+            continue
+        ct = r.get("correction_type", "?")
+        label = f"ex{ex}" if t == "__whole_gradient__" else f"{t[:20]}/ex{ex}"
+        names.append(label)
+        vals.append(val)
+        ctypes.append(ct)
+
+    if not vals:
+        return
+
+    colors = {"pass": "#2ca02c", "rotate": "#ff7f0e", "shrink": "#d62728"}
+    bar_colors = [colors.get(ct, "#7f7f7f") for ct in ctypes]
+
+    import numpy as np
+    fig, ax = plt.subplots(figsize=(max(8, len(names) * 0.4), 4))
+    x = np.arange(len(names))
+    bars = ax.bar(x, vals, color=bar_colors)
+    ax.set_xticks(x)
+    ax.set_xticklabels(names, rotation=45, ha="right", fontsize=6)
+    ax.set_ylabel("normalized correction magnitude")
+    ax.set_title(f"island {island_id} — correction per update")
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_handles = [Patch(color=c, label=t) for t, c in colors.items()]
+    ax.legend(handles=legend_handles, fontsize=8, loc="upper right")
+
+    plt.tight_layout()
+    png_path = out_dir / f"island_{island_id}_heatmap.png"
+    plt.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ correction heatmap: {png_path}")
 
 
 def _plot_island(steps: list[dict], png_path: Path) -> None:
@@ -1412,6 +1568,10 @@ def run_single_method(method: str, args: argparse.Namespace, method_log_dir: Pat
             export_metrics(method_log_dir, args_copy.islands, args_copy.data_distribution, args_copy.config)
         except Exception as exc:
             print(f"== metrics export failed: {exc}", file=sys.stderr)
+        try:
+            _generate_correction_heatmaps(method_log_dir)
+        except Exception as exc:
+            print(f"== correction heatmap generation failed: {exc}", file=sys.stderr)
 
 
 def build_dynamic_log_dir(base_log_dir: Path, args: argparse.Namespace) -> Path:

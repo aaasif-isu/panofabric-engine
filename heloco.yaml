@@ -42,6 +42,16 @@ gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 #   module: models.qwen3          config: qwen3_1_7b    ~1.7B params  (needs assets/hf/Qwen3-1.7B, NOT downloaded)
 #   module: models.llama3         config: llama3_8b     ~8B params    (needs assets/hf/Llama-3.1-8B, NOT downloaded)
 #
+# EleutherAI Pythia (genuine GPT-NeoX architecture, not a Llama emulation --
+# see models/pythia/__init__.py). All four share one GPT-NeoX-BPE tokenizer
+# (vocab_size=50304); NOT downloaded by this repo -- fetch it once with:
+#   heloco/bin/hf download EleutherAI/pythia-70m tokenizer.json \
+#       tokenizer_config.json --local-dir assets/hf/pythia
+#   module: models.pythia         config: pythia_14m    ~14M params   (needs assets/hf/pythia, NOT downloaded)
+#   module: models.pythia         config: pythia_70m    ~70M params   (needs assets/hf/pythia, NOT downloaded)
+#   module: models.pythia         config: pythia_410m   ~410M params  (needs assets/hf/pythia, NOT downloaded)
+#   module: models.pythia         config: pythia_1b     ~1B params    (needs assets/hf/pythia, NOT downloaded)
+#
 # See models/<module_without_prefix>/config_registry.py for the exact preset body.
 module: models.llama3_small
 config: llama3_15m
@@ -52,7 +62,7 @@ hf_assets: ./assets/tokenizer/debug
 
 # ================================================================ TRAINING PARAMETERS
 dataset: c4             # torchtitan dataset name (streams from HF Hub)
-steps: 50              # inner training steps per island
+steps: 100              # inner training steps per island
 seq_len: 512            # sequence length
 batch: 8                # local batch size per GPU rank
 
@@ -93,7 +103,7 @@ seed: 42
 #                         croatian, swedish, finnish, danish, bulgarian, lithuanian,
 #                         slovene, slovak, irish, maltese
 #
-data_distribution: iid  # or: iid, non_iid, both
+data_distribution: non_iid  # or: iid, non_iid, both
 languages: [english, french, german, spanish]  # per-island languages (only used if non_iid/both)
 
 # ================================================================ ASYNC COORDINATION
@@ -109,7 +119,7 @@ max_wait_time: 0.0           # max seconds to wait for server response; 0.0 = no
 # the code or running separate config files.
 
 # HeLoCo / DiLoCo / MLA window
-sync_steps: 10          # window H: inner steps between pushes to parameter server
+sync_steps: 20          # window H: inner steps between pushes to parameter server
 num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole model)
 
 # ================================================================ HETEROGENEITY SIMULATION
@@ -181,7 +191,7 @@ correction_heatmap: true
 #                          either way (always full HeLoCo).
 # Example: correction_workers: [0], other_islands_method: diloco means
 # island 0 is full HeLoCo and islands 1..N-1 are true DiLoCo.
-other_islands_method: heloco_uncorrected
+other_islands_method: diloco
 
 # other_islands_method: diloco only -- hyperparameters for the separate
 # true-DiLoCo optimizer used by non-selected islands. null -> reuse

@@ -374,6 +374,7 @@ class HeLoCoServer(AsyncDiLoCoServer):
             "PANOFABRIC_COMM_LOG_DIR", ""
         )
         self._heatmap_exchange_idx: int = 0
+        self._correction_update_idx: int = 0
 
         if other_islands_method not in _OTHER_ISLANDS_METHODS:
             raise ValueError(
@@ -461,6 +462,86 @@ class HeLoCoServer(AsyncDiLoCoServer):
                 writer.writeheader()
             for row in rows:
                 writer.writerow(row)
+
+    def _log_correction_update(
+        self,
+        island_id: int,
+        revision: int,
+        method: str,
+        pseudo_grads: Dict[str, torch.Tensor],
+        corrected: Dict[str, torch.Tensor],
+    ) -> None:
+        """Append one per-update correction summary row to
+        ``<correction_heatmap_dir>/correction_updates.csv``.
+
+        Called for EVERY update (heloco, heloco_uncorrected, diloco) to
+        record what happened.  The CSV contains one row per exchange/update
+        with island-level aggregate correction statistics.
+        """
+        if not self._correction_heatmap:
+            return  # per-update CSV is part of the correction_heatmap feature
+
+        import csv as _csv
+
+        out_dir = self._correction_heatmap_dir or "."
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, "correction_updates.csv")
+        header_needed = not os.path.exists(path)
+        fieldnames = [
+            "island_id",
+            "update_idx",
+            "revision",
+            "method",
+            "cosine_similarity",
+            "correction_type",
+            "correction_magnitude",
+            "normalized_correction_magnitude",
+        ]
+
+        # Compute aggregate correction statistics from corrected vs original.
+        # Flatten ALL tensors into one long vector for the overall metric.
+        names = list(pseudo_grads.keys())
+        delta_flat = torch.cat([pseudo_grads[n].reshape(-1).float() for n in names])
+        corrected_flat = torch.cat([corrected[n].reshape(-1).float() for n in names])
+        norm_d = delta_flat.norm().item()
+        corr_diff = corrected_flat - delta_flat
+        magnitude = corr_diff.norm().item()
+        normalized_magnitude = magnitude / (norm_d + self._eps) if norm_d > self._eps else 0.0
+
+        # Cosine similarity between corrected and original (proxy for correction severity)
+        if norm_d > self._eps and corrected_flat.norm().item() > self._eps:
+            cos_sim = torch.dot(
+                delta_flat.flatten(), corrected_flat.flatten()
+            ).item() / (norm_d * corrected_flat.norm().item())
+        else:
+            cos_sim = float("nan")
+
+        # Correction type: derive from normalized magnitude
+        if normalized_magnitude < self._eps:
+            corr_type = "pass"
+        elif cos_sim < 0.0 or (cos_sim != cos_sim):  # negative or NaN
+            corr_type = "shrink"
+        elif cos_sim < self._c_ok:
+            corr_type = "rotate"
+        else:
+            corr_type = "pass"
+
+        row = {
+            "island_id": island_id,
+            "update_idx": self._correction_update_idx,
+            "revision": revision,
+            "method": method,
+            "cosine_similarity": cos_sim,
+            "correction_type": corr_type,
+            "correction_magnitude": magnitude,
+            "normalized_correction_magnitude": normalized_magnitude,
+        }
+
+        with open(path, "a", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=fieldnames)
+            if header_needed:
+                writer.writeheader()
+            writer.writerow(row)
 
     @torch.profiler.record_function("heloco.lookahead_snapshot")
     def _lookahead_snapshot(self, names: List[str]) -> Dict[str, torch.Tensor]:
@@ -550,6 +631,15 @@ class HeLoCoServer(AsyncDiLoCoServer):
                 self._commit_step_locked(
                     pseudo_grads, fragment, optimizer=self._diloco_optimizer
                 )
+                revision = self._revision
+            self._correction_update_idx += 1
+            try:
+                self._log_correction_update(
+                    island_id, revision, "diloco",
+                    pseudo_grads, pseudo_grads,  # corrected == original
+                )
+            except Exception:
+                logger.exception("correction update logging failed (diloco)")
             return
 
         with self._lock:
@@ -602,6 +692,18 @@ class HeLoCoServer(AsyncDiLoCoServer):
 
         with self._lock:
             self._commit_step_locked(corrected, fragment)
+            revision = self._revision
+
+        # --- per-update summary row (heloco or heloco_uncorrected) ---
+        method_label = "heloco" if gets_correction else "heloco_uncorrected"
+        self._correction_update_idx += 1
+        try:
+            self._log_correction_update(
+                island_id, revision, method_label,
+                pseudo_grads, corrected,
+            )
+        except Exception:
+            logger.exception("correction update logging failed")
 
     def _record_heatmap(
         self,
