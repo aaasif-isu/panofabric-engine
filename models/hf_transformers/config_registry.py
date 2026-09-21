@@ -158,3 +158,10 @@ def hf_finetune() -> HFFTConfig:
     config.checkpoint.enable = True               # the initial HF-weight load is gated on it
     config.checkpoint.initial_load_in_hf = True   # pretrained safetensors from hf_assets_path
     return config
+
+def smollm2_135m() -> HFFTConfig:
+    """SmolLM2-135M architecture, trained from scratch."""
+    config = hf_full()
+    config.hf_model = "./assets/hf/smollm2_135m"
+    config.hf_assets_path = "./assets/hf/smollm2_135m"
+    return config

@@ -836,6 +836,9 @@ def main() -> None:
         os.environ["RL_HF_ASSETS_PATH"] = args.hf_assets_path
         cfg_args.append(f"--hf_assets_path={args.hf_assets_path}")
     replica_cfg = ConfigManager().parse_args(cfg_args)
+    # Mirror TorchTitan trainer behavior: populate model-specific/HF config
+    # before constructing the global parameter-server model.
+    replica_cfg.model_spec.model.update_from_config(config=replica_cfg)
     torch.manual_seed(args.seed)
     model = build_global_model(replica_cfg.model_spec, replica_cfg.hf_assets_path)
     param_names, _, _ = param_metadata(model)
