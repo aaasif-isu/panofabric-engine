@@ -160,8 +160,68 @@ def hf_finetune() -> HFFTConfig:
     return config
 
 def smollm2_135m() -> HFFTConfig:
-    """SmolLM2-135M architecture, trained from scratch."""
+    """Official SmolLM2-135M architecture, trained from scratch."""
     config = hf_full()
     config.hf_model = "./assets/hf/smollm2_135m"
     config.hf_assets_path = "./assets/hf/smollm2_135m"
+
+    # TorchTitan's HF backend currently requires partial_dtensor.
+    config.parallelism.spmd_backend = "partial_dtensor"
+
+    return config
+
+def smollm2_360m() -> HFFTConfig:
+    """Official SmolLM2-360M architecture, trained from scratch."""
+    config = hf_full()
+    config.hf_model = "./assets/hf/smollm2_360m"
+    config.hf_assets_path = "./assets/hf/smollm2_360m"
+
+    # Required by TorchTitan HF backend.
+    config.parallelism.spmd_backend = "partial_dtensor"
+
+    return config
+
+def smollm2_1_7b() -> HFFTConfig:
+    """Official SmolLM2-1.7B architecture, trained from scratch."""
+    config = hf_full()
+    config.hf_model = "./assets/hf/smollm2_1_7b"
+    config.hf_assets_path = "./assets/hf/smollm2_1_7b"
+
+    # Required by TorchTitan HF backend.
+    config.parallelism.spmd_backend = "partial_dtensor"
+
+    return config
+
+def gemma3_270m() -> HFFTConfig:
+    """Official Gemma 3 270M architecture, trained from scratch."""
+    config = hf_full()
+
+    config.hf_model = "./assets/hf/gemma3_270m"
+    config.hf_assets_path = "./assets/hf/gemma3_270m"
+
+    # Required by TorchTitan HF backend.
+    config.parallelism.spmd_backend = "partial_dtensor"
+
+    return config
+
+def gemma3_1b() -> HFFTConfig:
+    """Official Gemma 3 1B architecture, trained from scratch."""
+    config = hf_full()
+
+    config.hf_model = "./assets/hf/gemma3_1b"
+    config.hf_assets_path = "./assets/hf/gemma3_1b"
+
+    config.parallelism.spmd_backend = "partial_dtensor"
+
+    return config
+
+def distilgpt2() -> HFFTConfig:
+    """Official DistilGPT2 architecture, trained from scratch."""
+    config = hf_full()
+
+    config.hf_model = "./assets/hf/distilgpt2"
+    config.hf_assets_path = "./assets/hf/distilgpt2"
+
+    config.parallelism.spmd_backend = "partial_dtensor"
+
     return config

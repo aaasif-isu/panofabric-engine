@@ -17,8 +17,8 @@
 methods: [heloco, mla, diloco]
 
 # ================================================================ TOPOLOGY
-islands: 2              # number of workers (trainer replicas) per method
-gpus_per_island: 2      # GPUs per worker; FSDP-sharded inside each island
+islands: 4              # number of workers (trainer replicas) per method
+gpus_per_island: 1      # GPUs per worker; FSDP-sharded inside each island
 gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 
 # ================================================================ MODEL & RECIPE
@@ -51,16 +51,56 @@ gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 #   module: models.pythia         config: pythia_70m    ~70M params   (needs assets/hf/pythia, NOT downloaded)
 #   module: models.pythia         config: pythia_410m   ~410M params  (needs assets/hf/pythia, NOT downloaded)
 #   module: models.pythia         config: pythia_1b     ~1B params    (needs assets/hf/pythia, NOT downloaded)
+
+# ----------------------------------------------------------------
+# SmolLM2 official model family
+# Use for model-size scaling with REAL released model configurations rather
+# than manually changing layers/heads.
+#
+# All SmolLM2 presets below:
+#   - use the official architecture/config
+#   - use the matching official tokenizer
+#   - initialize weights randomly
+#   - train FROM SCRATCH (no pretrained weights loaded)
+#
+# Available official sizes:
+#
+#   SmolLM2-135M:
+#   module: models.hf_transformers   config: smollm2_135m
+#   hf_assets: ./assets/hf/smollm2_135m
+#
+#   SmolLM2-360M:
+#   module: models.hf_transformers   config: smollm2_360m
+#   hf_assets: ./assets/hf/smollm2_360m
+#
+#   SmolLM2-1.7B:
+#   module: models.hf_transformers   config: smollm2_1_7b
+#   hf_assets: ./assets/hf/smollm2_1_7b
+#
+# NOTE: `hf_model` is intentionally NOT a heloco.yaml option.
+# The model/config path is defined inside each SmolLM2 Python preset.
+#
+# ----------------------------------------------------------------
 #
 # See models/<module_without_prefix>/config_registry.py for the exact preset body.
-module: models.llama3_small
-config: llama3_1b
+# module: models.llama3_small 
+# config: llama3_15m
+
+module: models.hf_transformers   
+config: distilgpt2 #gemma3_1b, gemma3_270m, distilgpt2 ()
+
 
 # Model assets: tokenizer (+ optional pretrained checkpoint). Must match the
 # config chosen above -- see the table next to `config:` for the right pairing.
-hf_assets: ./assets/tokenizer/debug
+#hf_assets: ./assets/tokenizer/debug
 #hf_assets: assets/hf/Qwen3-0.6B
 #hf_assets: ./assets/hf/pythia
+#hf_assets: ./assets/hf/smollm2_135m
+#hf_assets: ./assets/hf/smollm2_360m
+#hf_assets: ./assets/hf/smollm2_1_7b
+#hf_assets: ./assets/hf/gemma3_1b
+hf_assets: ./assets/hf/distilgpt2
+
 
 
 # # SmolLM2-135M:
@@ -113,13 +153,13 @@ seed: 42
 #                         slovene, slovak, irish, maltese
 #
 data_distribution: iid  # or: iid, non_iid, both
-languages: [english, french] # , german, spanish]  # per-island languages (only used if non_iid/both)
+languages: [english, french , german, spanish]  # per-island languages (only used if non_iid/both)
 
 # ================================================================ ASYNC COORDINATION
 # Coordination method: sync (torchft barrier) or async (HTTP push/pull)
 # - sync:  window-synchronous with torchft semi_sync_method=heloco (staleness=0)
 # - async: fully asynchronous via AsyncDiLoCoServer/HeLoCoServer with staleness weighting
-coordination_method: sync    # or: async
+coordination_method: async    # or: async
 async_interval: 1            # check staleness every N window pulses (async only)
 max_wait_time: 0.0           # max seconds to wait for server response; 0.0 = no timeout
 
@@ -140,14 +180,14 @@ num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole 
 # fault_tolerance config has no such flag), and panoengine's AsyncDiLoCo worker
 # (panoengine/decentralized/async_diloco.py) sleeps extra time proportional to
 # (factor - 1) after every inner optimizer step.
-#island_slowness_factors: [1, 1.5] #, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
-island_slowness_factors: null
+island_slowness_factors: [1, 1.5, 2, 1.3]  # null = default [1.0, 1.0, ...] for all islands
+#island_slowness_factors: null
 
 # Server-side outer optimizer (HeLoCo, DiLoCo, MLA)
 outer_lr: 0.7           # outer learning rate (HeLoCoOptimizer / MLAOptimizer)
 outer_momentum: 0.9     # momentum
 rho: null               # HeLoCo arrival weight; null -> auto (1/sqrt(islands))
-should_quantize: False  # int8 pseudo-gradient upload (reduces comm)
+should_quantize: false  # int8 pseudo-gradient upload (reduces comm)
 
 # MLA uses only: outer_lr, outer_momentum
 # MLA = simple momentum look-ahead on server: m <- γ·m + (1−γ)·Δ, θ <- θ − lr·(γ·m + Δ)
@@ -215,7 +255,7 @@ host: 127.0.0.1
 lighthouse_port: 29510  # rendezvous server port
 ps_port: 29520          # parameter server port
 rdzv_base_port: 29600   # island i rendezvous on rdzv_base_port + i
-log_dir: outputs/heloco_run_test_homo   # base directory; will be expanded to:
+log_dir: outputs/heloco_run_gemma   # base directory; will be expanded to:
                               # outputs/heloco_run_{coordination_method}_{config}_{data_distribution}_{steps}
                               # Example: outputs/heloco_run_sync_qwen3_0_6b_iid_100
                               # Set custom value to disable this behavior
