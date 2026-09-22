@@ -87,19 +87,19 @@ gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 # config: llama3_15m
 
 module: models.hf_transformers   
-config: distilgpt2 #gemma3_1b, gemma3_270m, distilgpt2 ()
+config: gemma3_1b #gemma3_1b, gemma3_270m, distilgpt2 (82m)
 
 
 # Model assets: tokenizer (+ optional pretrained checkpoint). Must match the
 # config chosen above -- see the table next to `config:` for the right pairing.
-#hf_assets: ./assets/tokenizer/debug
+hf_assets: ./assets/tokenizer/debug
 #hf_assets: assets/hf/Qwen3-0.6B
 #hf_assets: ./assets/hf/pythia
 #hf_assets: ./assets/hf/smollm2_135m
 #hf_assets: ./assets/hf/smollm2_360m
 #hf_assets: ./assets/hf/smollm2_1_7b
 #hf_assets: ./assets/hf/gemma3_1b
-hf_assets: ./assets/hf/distilgpt2
+#hf_assets: ./assets/hf/distilgpt2
 
 
 
@@ -255,7 +255,7 @@ host: 127.0.0.1
 lighthouse_port: 29510  # rendezvous server port
 ps_port: 29520          # parameter server port
 rdzv_base_port: 29600   # island i rendezvous on rdzv_base_port + i
-log_dir: outputs/heloco_run_gemma   # base directory; will be expanded to:
+log_dir: outputs/heloco_run_debug_tok   # base directory; will be expanded to:
                               # outputs/heloco_run_{coordination_method}_{config}_{data_distribution}_{steps}
                               # Example: outputs/heloco_run_sync_qwen3_0_6b_iid_100
                               # Set custom value to disable this behavior

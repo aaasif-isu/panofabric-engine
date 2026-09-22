@@ -217,11 +217,19 @@ def gemma3_1b() -> HFFTConfig:
 
 def distilgpt2() -> HFFTConfig:
     """Official DistilGPT2 architecture, trained from scratch."""
+
+    from .gpt2_compat import enable_gpt2_compat
+
+    enable_gpt2_compat()
+
     config = hf_full()
 
     config.hf_model = "./assets/hf/distilgpt2"
     config.hf_assets_path = "./assets/hf/distilgpt2"
 
     config.parallelism.spmd_backend = "partial_dtensor"
+
+    # DistilGPT2 has a 1024-token context length.
+    config.training.seq_len = 1024
 
     return config
