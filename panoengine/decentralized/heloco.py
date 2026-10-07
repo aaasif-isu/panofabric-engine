@@ -118,9 +118,9 @@ def block_correct(
     pseudo_grads: Dict[str, torch.Tensor],
     momentum_buffers: Dict[str, Optional[torch.Tensor]],
     rho: float = 1.0,
-    c_ok: float = 0.2,
-    k_s: float = 0.5,
-    k_d: float = 1.0,
+    c_ok: float = 0.2, #0.05, 0.1, 0.2, 0.4, 0.8
+    k_s: float = 0.50, #0.125, 0.25, 0.50, 1.0, 2.0
+    k_d: float = 1.00, #0.25, 0.50, 1.0 , 2.0, 4.0
     kappa: float = 3.0,
     beta_max: float = 0.5,
     eps: float = 1e-8,

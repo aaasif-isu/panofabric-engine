@@ -83,11 +83,12 @@ gpus: [0, 1, 2, 3]      # GPU ids to hand out, island by island
 # ----------------------------------------------------------------
 #
 # See models/<module_without_prefix>/config_registry.py for the exact preset body.
-# module: models.llama3_small 
-# config: llama3_15m
+module: models.qwen3
+config: qwen3_0_6b 
 
-module: models.hf_transformers   
-config: gemma3_1b #gemma3_1b, gemma3_270m, distilgpt2 (82m)
+# module: models.hf_transformers   
+# ##gemma3_1b, gemma3_270m, distilgpt2 (82m), llama32_3b
+# config: smollm2_135m 
 
 
 # Model assets: tokenizer (+ optional pretrained checkpoint). Must match the
@@ -100,6 +101,8 @@ hf_assets: ./assets/tokenizer/debug
 #hf_assets: ./assets/hf/smollm2_1_7b
 #hf_assets: ./assets/hf/gemma3_1b
 #hf_assets: ./assets/hf/distilgpt2
+#hf_assets: ./assets/hf/llama32_3b
+#hf_assets: ./assets/hf/Qwen3-1.7B
 
 
 
@@ -111,7 +114,7 @@ hf_assets: ./assets/tokenizer/debug
 
 # ================================================================ TRAINING PARAMETERS
 dataset: c4             # torchtitan dataset name (streams from HF Hub)
-steps: 100              # inner training steps per island
+steps: 500              # inner training steps per island
 seq_len: 512            # sequence length
 batch: 8                # local batch size per GPU rank
 
@@ -152,7 +155,7 @@ seed: 42
 #                         croatian, swedish, finnish, danish, bulgarian, lithuanian,
 #                         slovene, slovak, irish, maltese
 #
-data_distribution: iid  # or: iid, non_iid, both
+data_distribution: non_iid  # or: iid, non_iid, both
 languages: [english, french , german, spanish]  # per-island languages (only used if non_iid/both)
 
 # ================================================================ ASYNC COORDINATION
@@ -168,7 +171,7 @@ max_wait_time: 0.0           # max seconds to wait for server response; 0.0 = no
 # the code or running separate config files.
 
 # HeLoCo / DiLoCo / MLA window
-sync_steps: 20          # window H: inner steps between pushes to parameter server
+sync_steps: 50          # window H: inner steps between pushes to parameter server
 num_fragments: 1        # fragment-wise sync; must divide sync_steps (1 = whole model)
 
 # ================================================================ HETEROGENEITY SIMULATION
@@ -255,7 +258,7 @@ host: 127.0.0.1
 lighthouse_port: 29510  # rendezvous server port
 ps_port: 29520          # parameter server port
 rdzv_base_port: 29600   # island i rendezvous on rdzv_base_port + i
-log_dir: outputs/heloco_run_debug_tok   # base directory; will be expanded to:
+log_dir: outputs/sensitivity/step_50_500/heloco_run   # base directory; will be expanded to:
                               # outputs/heloco_run_{coordination_method}_{config}_{data_distribution}_{steps}
                               # Example: outputs/heloco_run_sync_qwen3_0_6b_iid_100
                               # Set custom value to disable this behavior

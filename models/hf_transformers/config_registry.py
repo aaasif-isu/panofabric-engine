@@ -233,3 +233,14 @@ def distilgpt2() -> HFFTConfig:
     config.training.seq_len = 1024
 
     return config
+
+def llama32_3b() -> HFFTConfig:
+    """Official Llama 3.2 3B architecture, trained from scratch."""
+    config = hf_full()
+
+    config.hf_model = "./assets/hf/llama32_3b"
+    config.hf_assets_path = "./assets/hf/llama32_3b"
+
+    config.parallelism.spmd_backend = "partial_dtensor"
+
+    return config
