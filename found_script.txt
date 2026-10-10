@@ -1,0 +1,4 @@
+./archive/old_folders/five-method-benchmark-update/preimages/run_method_comparison.py
+./archive/old_folders/five-method-benchmark-update-v2/preimages/run_method_comparison.py
+./archive/experiment_scripts/run_method_comparison.py
+./run_script/run_method_comparison.py

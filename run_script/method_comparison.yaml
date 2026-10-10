@@ -1,0 +1,67 @@
+# One command trains these methods sequentially, then evaluates all globals.
+method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
+
+# Common numerical recipe and local budget for every method.
+run:
+  islands: 4
+  gpus_per_island: 1
+  gpus: [0, 1, 2, 3]
+  module: models.llama3_small
+  config: llama3_15m
+  hf_assets: ./assets/tokenizer/debug
+  dataset: c4
+  steps: 40
+  seq_len: 512
+  batch: 1
+  tokens_per_parameter: null
+  seed: 42
+  data_distribution: iid
+  languages: []
+  island_slowness_factors: [1, 2, 3, 1]
+  coordination_method: async
+  async_interval: 1
+  max_wait_time: 0.0
+  # Original methods exchange the whole model every 10 local steps.
+  sync_steps: 20
+  num_fragments: 1
+  outer_lr: 0.7
+  outer_momentum: 0.9
+  rho: null
+  should_quantize: false
+  correction_workers: all
+  correction_scope: tensorwise
+  correction_heatmap: false
+  other_islands_method: heloco_uncorrected
+  host: 127.0.0.1
+  ps_timeout: 600.0
+  log_dir: outputs/method_comparison
+  extra: []
+
+# Fragment/quorum controls used only by the two decoupled methods.
+decoupled:
+  num_fragments: 4
+  min_quorum: 2
+  overlap_steps: 5
+  sync_interval: 1.0
+  grace_window_factor: 0.8
+  scheduler: round_robin
+  merge: weighted_average
+  heloco:
+    rho: 1.0
+    correction_enabled: true
+    lookahead: true
+    c_ok: 0.2
+    k_s: 0.5
+    k_d: 1.0
+    kappa: 3.0
+    beta_max: 0.5
+    eps: 1.0e-8
+
+evaluation:
+  enabled: true
+  batches: 100
+  device: cuda:0
+  # null freezes one held-out stream for all five fresh runs.
+  # You can instead put the path to a compatible validation_batches.pt here.
+  validation_cache: null
+  timeout: 900.0

@@ -1,0 +1,48 @@
+panoengine/decentralized/tests/async_diloco_test.py:377:        """THE safety proof for the streaming request path (heloco-ps-memory §6
+panoengine/decentralized/async_diloco.py:96:    workers (panofabric docs/heloco-ps-memory.md).
+panoengine/decentralized/async_diloco.py:99:    _read_exact_into(stream, memoryview(buf))
+panoengine/decentralized/async_diloco.py:103:def _read_exact_into(stream: BinaryIO, view: memoryview) -> None:
+panoengine/decentralized/async_diloco.py:106:    The zero-copy core of :func:`_read_exact` — and, given a memoryview over a
+panoengine/decentralized/async_diloco.py:643:        # per-push memory at ONE model copy total — independent of how many
+panoengine/decentralized/async_diloco.py:831:                        payload = memoryview(body_bytes)
+panoengine/decentralized/async_diloco.py:838:                        payload = memoryview(body_t.numpy()).cast("B")
+panoengine/decentralized/async_diloco.py:841:                        # Zero-copy body: a memoryview over the snapshot's own
+panoengine/decentralized/async_diloco.py:847:                        payload = memoryview(
+panoengine/decentralized/async_diloco.py:1148:                    rfile, memoryview(flat.numpy()).cast("B")
+panoengine/decentralized/async_diloco.py:2652:        params parameter-by-parameter (bounded follower memory — one full
+panoengine/decentralized/async_diloco.py:2858:        # pseudo-gradient. That turns a capped-concurrency server (the memory fix
+panoengine/decentralized/relay.py:16:#     last ``retain_last`` versions (disk/memory limits, matching the paper).
+panoengine/decentralized/relay.py:176:    """In-memory shard/manifest store for one relay node.
+panoengine/train/rl/config_registry.py:139:    VLLMGenerator.Config.gpu_memory_limit's own default. These presets used to
+panoengine/train/rl/config_registry.py:146:    raise it. Tune it per run instead: `--generator.gpu_memory_limit=0.35`
+panoengine/train/rl/config_registry.py:354:    the reference's fp32-lm-head converter / vLLM cudagraph capture (memory and
+panoengine/train/rl/tests/test_decentralized_rl.py:684:def test_gpu_memory_limit_is_not_pinned_by_the_presets():
+panoengine/train/rl/tests/test_decentralized_rl.py:688:    These presets used to force `gpu_memory_limit=0.35` for shared dev boxes.
+panoengine/train/rl/tests/test_decentralized_rl.py:709:    engine_default = VLLMGenerator.Config().gpu_memory_limit
+panoengine/train/rl/tests/test_decentralized_rl.py:719:        assert cfg.generator.gpu_memory_limit == engine_default, (
+panoengine/train/rl/tests/test_decentralized_rl.py:720:            f"{fn.__name__} pins gpu_memory_limit to "
+panoengine/train/rl/tests/test_decentralized_rl.py:721:            f"{cfg.generator.gpu_memory_limit}; leave it at the engine default "
+panoengine/train/rl/tests/test_decentralized_rl.py:722:            "and override per run with --generator.gpu_memory_limit"
+panoengine/serve/engine_stage.py:34:# memory-bandwidth-bound decode).
+panoengine/serve/engine_stage.py:203:    def __init__(self, stage_dir: Path, *, gpu_memory_utilization: float = 0.45,
+panoengine/serve/engine_stage.py:250:                       gpu_memory_utilization=gpu_memory_utilization,
+panoengine/serve/engine_stage.py:1224:    p.add_argument("--gpu-memory-utilization", type=float, default=0.45)
+panoengine/serve/engine_stage.py:1261:                        gpu_memory_utilization=args.gpu_memory_utilization,
+panoengine/serve/tests/test_serve.py:61:    # equal memory, no edge weight -> even split
+panoengine/serve/tests/test_serve.py:63:    # 3:1 memory -> 3:1 layers
+panoengine/serve/sharder.py:6:# stages proportional to each stage's GPU memory, then writes one pruned
+panoengine/serve/sharder.py:16:#       --stage-memory 80,40,80 --out /path/to/staged
+panoengine/serve/sharder.py:72:def plan_ranges(num_layers: int, stage_memory_gb: list[float],
+panoengine/serve/sharder.py:74:    """Apportion layers to stages proportional to memory, after discounting
+panoengine/serve/sharder.py:77:    if len(stage_memory_gb) < 2:
+panoengine/serve/sharder.py:79:    if num_layers < len(stage_memory_gb):
+panoengine/serve/sharder.py:81:                         f"{len(stage_memory_gb)} stages")
+panoengine/serve/sharder.py:82:    budgets = [m * (1 << 30) for m in stage_memory_gb]
+panoengine/serve/sharder.py:86:        raise ValueError("no stage memory left after embeddings/head")
+panoengine/serve/sharder.py:108:                     stage_memory_gb: list[float], *,
+panoengine/serve/sharder.py:166:        ranges = plan_ranges(num_layers, stage_memory_gb,
+panoengine/serve/sharder.py:219:        "stage_memory_gb": stage_memory_gb,
+panoengine/serve/sharder.py:230:    p.add_argument("--stage-memory", required=True,
+panoengine/serve/sharder.py:231:                   help="comma-separated per-stage GPU memory in GB, e.g. 80,40")
+panoengine/serve/sharder.py:235:                        "the memory-proportional split")
+panoengine/serve/sharder.py:242:        [float(x) for x in args.stage_memory.split(",")],
