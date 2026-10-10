@@ -19,6 +19,10 @@ from .fragment_manager import FragmentManager
 from .state import FragmentMetadata, FragmentSnapshot, FragmentState
 
 
+class SyncerClockComplete(RuntimeError):
+    """No further optimizer step may start at the configured syncer clock."""
+
+
 class StaleSnapshotRequest(RuntimeError):
     """The requested baseline revision is no longer applied locally."""
 
@@ -34,6 +38,7 @@ class LearnerMetadata:
     total_local_steps: int
     total_tokens: int
     fragments: tuple[FragmentMetadata, ...]
+    syncer_step: int = 0
 
 
 @dataclass(frozen=True)
@@ -52,16 +57,19 @@ class DecoupledLearner:
     steps that may be skipped, use begin_step/end_step with completed=False.
     Snapshots and pending replacements are serviced only at safe boundaries.
 
-    At most one request is retained by default, limiting cached snapshots to
-    one fragment. Receiver/control threads may read metadata, queue updates,
+    At most one request is retained by default; the pipeline raises this
+    configured limit while retaining at most one snapshot per fragment. Receiver/control threads may read metadata, queue updates,
     and request/release snapshots. They must not call training boundary methods.
     """
 
-    def __init__(self, model, num_fragments: int, *, learner_id: int, max_snapshot_requests: int = 1):
+    def __init__(self, model, num_fragments: int, *, learner_id: int, max_snapshot_requests: int = 1, stop_at_syncer_step: int | None = None):
         if type(learner_id) is not int or learner_id < 0:
             raise ValueError("learner_id must be a nonnegative integer")
         if type(max_snapshot_requests) is not int or max_snapshot_requests < 1:
             raise ValueError("max_snapshot_requests must be a positive integer")
+        if stop_at_syncer_step is not None and (type(stop_at_syncer_step) is not int or stop_at_syncer_step < 1):
+            raise ValueError("stop_at_syncer_step must be a positive integer or None")
+        self.stop_at_syncer_step = stop_at_syncer_step
         self.learner_id = learner_id
         self.manager = FragmentManager.from_model(model, num_fragments)
         self._parameters = dict(model.named_parameters())
@@ -74,6 +82,9 @@ class DecoupledLearner:
         self._step_active = False
         self._total_local_steps = 0
         self._total_tokens = 0
+        self._syncer_step = 0
+        self._pending_clock = 0
+        self._fragment_clocks = {}
         self._requests: dict[str, _SnapshotRequest] = {}
         self._max_snapshot_requests = max_snapshot_requests
         # Request IDs are monotonically increasing integers chosen by the
@@ -90,15 +101,30 @@ class DecoupledLearner:
             return LearnerMetadata(
                 self.learner_id, self.manager.layout_signature,
                 self._total_local_steps, self._total_tokens,
-                tuple(state.metadata() for state in self._states),
+                tuple(state.metadata() for state in self._states), self._syncer_step,
             )
 
-    def queue_update(self, fragment_id: int, parameters: Mapping[str, torch.Tensor], revision: int, *, layout_signature: str) -> bool:
+    def queue_update(self, fragment_id: int, parameters: Mapping[str, torch.Tensor], revision: int, *, layout_signature: str, global_step: int = 0) -> bool:
         self.manager.fragment(fragment_id)
+        if type(global_step) is not int or global_step < 0:
+            raise ValueError("global_step must be a nonnegative integer")
         with self._lock:
-            return self._states[fragment_id].queue_update(
+            existing = self._fragment_clocks.get(fragment_id)
+            if existing is not None and existing[0] == revision and existing[1] != global_step:
+                raise ValueError("the same fragment revision must carry the same syncer clock")
+            accepted = self._states[fragment_id].queue_update(
                 parameters, revision, layout_signature=layout_signature,
             )
+            if accepted:
+                self._fragment_clocks[fragment_id] = (revision, global_step)
+            return accepted
+
+    def queue_syncer_clock(self, global_step: int) -> None:
+        """Queue an idle/terminal clock; only the training boundary applies it."""
+        if type(global_step) is not int or global_step < 0:
+            raise ValueError("global_step must be a nonnegative integer")
+        with self._lock:
+            self._pending_clock = max(self._pending_clock, global_step)
 
     def request_snapshot(
         self, request_id: str, fragment_id: int, expected_revision: int, *, min_local_steps: int = 1,
@@ -127,6 +153,8 @@ class DecoupledLearner:
                 return existing.future
             if sequence <= self._highest_request_id:
                 raise ValueError("request_id has already been released or is out of order")
+            if any(request.fragment_id == fragment_id for request in self._requests.values()):
+                raise SnapshotQueueFull("only one retained capture per fragment is allowed")
             if len(self._requests) >= self._max_snapshot_requests:
                 raise SnapshotQueueFull("release the retained snapshot request before requesting another")
             future: Future[FragmentSnapshot] = Future()
@@ -150,6 +178,11 @@ class DecoupledLearner:
             state.fragment_id for state in self._states
             if state.apply_pending(self._parameters)
         )
+        for fragment_id in applied:
+            revision, clock = self._fragment_clocks.get(fragment_id, (0, 0))
+            if revision == self._states[fragment_id].metadata().last_applied_revision:
+                self._syncer_step = max(self._syncer_step, clock)
+        self._syncer_step = max(self._syncer_step, self._pending_clock)
         for request in tuple(self._requests.values()):
             if request.future.done():
                 continue
@@ -190,6 +223,8 @@ class DecoupledLearner:
             if self._step_active:
                 raise RuntimeError("a training step is already active")
             self._service_boundary()
+            if self.stop_at_syncer_step is not None and self._syncer_step >= self.stop_at_syncer_step:
+                raise SyncerClockComplete("learner reached the syncer-clock budget")
             self._step_active = True
 
     def end_step(self, tokens: int, *, completed: bool = True) -> tuple[int, ...]:

@@ -112,7 +112,7 @@ class DiLoCoOptimizerTests(unittest.TestCase):
         local = [copy.deepcopy(model) for _ in range(3)]
         learners = [DecoupledLearner(m, 1, learner_id=i) for i, m in enumerate(local)]
         syncer = DecoupledSyncer(model, learners, 1, min_quorum=2, overlap_steps=1,
-                                outer_method="diloco", outer_lr=1.0)
+                                outer_method="diloco", outer_lr=1.0, weighting="tokens")
         for index, tokens, delta in ((0, 10, 0.1), (1, 30, 0.3)):
             with learners[index].training_step(tokens=tokens), torch.no_grad():
                 for parameter in local[index].parameters():
@@ -197,7 +197,7 @@ class ComparisonPreparationTests(unittest.TestCase):
     def fixture(self, directory):
         folder = Path(directory) / "reference"
         folder.mkdir()
-        data = yaml.safe_load((ROOT / "decoupled_heloco.yaml").read_text())
+        data = yaml.safe_load((ROOT / "run_script" / "decoupled_heloco.yaml").read_text())
         data["run"].update(steps=500, island_slowness_factors=[1, 2, 3, 1])
         config_file = folder / "experiment.yaml"
         config_file.write_text(yaml.safe_dump(data))

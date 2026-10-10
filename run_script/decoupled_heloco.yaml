@@ -1,0 +1,84 @@
+# Single-method default. Use --method decoupled_diloco to select DiLoCo.
+method: decoupled_heloco
+run:
+  islands: 4
+  gpus_per_island: 1
+  gpus:
+  - 0
+  - 1
+  - 2
+  - 3
+  module: models.llama3_small
+  config: llama3_15m
+  hf_assets: ./assets/tokenizer/debug
+  dataset: c4
+  steps: 40
+  seq_len: 512
+  batch: 1
+  tokens_per_parameter: null
+  seed: 42
+  data_distribution: iid
+  languages: []
+  island_slowness_factors:
+  - 1
+  - 2
+  - 3
+  - 1
+  coordination_method: async
+  async_interval: 1
+  max_wait_time: 0.0
+  sync_steps: 20
+  num_fragments: 1
+  outer_lr: 0.7
+  outer_momentum: 0.9
+  rho: null
+  should_quantize: false
+  correction_workers: all
+  correction_scope: tensorwise
+  correction_heatmap: false
+  other_islands_method: heloco_uncorrected
+  host: 127.0.0.1
+  ps_timeout: 600.0
+  log_dir: outputs/method_comparison
+  extra: []
+decoupled:
+  num_fragments: 4
+  max_inflight_captures: 1  # 1: serial capture; 2..num_fragments: concurrent pipeline
+  syncer_shards: 1  # >1: persistent CPU replicas with fragment all-reduce
+  syncer_timeout: 60.0  # startup/collective/response timeout in seconds
+  min_quorum: 2
+  overlap_steps: 2
+  sync_interval: 1.0
+  grace_window_factor: 0.8
+  # local_steps keeps run.steps as the per-learner budget.
+  # syncer_steps stops at the shared clock T (paper_offsets only); tokens may differ.
+  stopping: local_steps
+  syncer_steps: null  # set a positive T together with stopping: syncer_steps
+  clock_lr_schedule: constant  # or local_horizon (uses run.steps); clock mode only
+  scheduler: paper_offsets  # or round_robin
+  sync_period: null  # H; null uses num_fragments
+  fragment_offsets: null  # t_p per fragment; null spreads offsets over H
+  min_local_steps: null  # paper_offsets: 1; round_robin: overlap_steps
+  # weighted_average, rda (all tensors), or paper_rda (Avg embeddings/RDA others).
+  merge: paper_rda
+  weighting: tokens_squared_per_step
+  adaptive_grace: true
+  timing_ema_alpha: 0.2
+  heloco:
+    correction_order: merge_then_correct  # or correct_then_merge
+    rho: 1.0
+    correction_enabled: true
+    lookahead: true
+    c_ok: 0.2
+    k_s: 0.5
+    k_d: 1.0
+    kappa: 3.0
+    beta_max: 0.5
+    eps: 1.0e-08
+
+# Snapshots are evaluated after training on the shared held-out batches.
+monitoring:
+  enabled: true
+  global_every_updates: 1
+  learner_every_steps: 10
+  memory_sample_seconds: 0.1

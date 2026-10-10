@@ -112,7 +112,7 @@ def load_validation_cache(payload, expected_metadata, *, vocab_size):
     return batches
 
 
-def load_global_parameters(model, payload, *, num_fragments, expected_revisions=None, expected_method=None):
+def load_global_parameters(model, payload, *, num_fragments, expected_revisions=None, expected_method=None, expected_syncer_step=None):
     """Validate the complete exported global checkpoint before replacing weights."""
     if not isinstance(payload, dict) or payload.get("format") not in {GLOBAL_FORMAT, BASELINE_FORMAT}:
         raise ValueError("expected a supported named-parameter global export")
@@ -125,8 +125,14 @@ def load_global_parameters(model, payload, *, num_fragments, expected_revisions=
     manager = FragmentManager.from_model(model, num_fragments)
     if payload.get("layout_signature") != manager.layout_signature:
         raise ValueError("checkpoint layout signature does not match the evaluation model")
+    minimum_revision = 1
+    if expected_syncer_step is not None:
+        if (payload["format"] != GLOBAL_FORMAT or type(expected_syncer_step) is not int or expected_syncer_step < 1
+                or type(payload.get("syncer_step")) is not int or payload["syncer_step"] != expected_syncer_step):
+            raise ValueError("checkpoint syncer clock differs from the configured completed budget")
+        minimum_revision = 0  # A short/sparse clock budget may leave fragments untouched.
     revisions = payload.get("fragment_revisions")
-    if not isinstance(revisions, (tuple, list)) or len(revisions) != num_fragments or any(type(r) is not int or r < 1 for r in revisions):
+    if not isinstance(revisions, (tuple, list)) or len(revisions) != num_fragments or any(type(r) is not int or r < minimum_revision for r in revisions):
         raise ValueError("checkpoint fragment revisions are invalid")
     if expected_revisions is not None and list(revisions) != list(expected_revisions):
         raise ValueError("checkpoint revisions differ from the run summary")
@@ -196,3 +202,20 @@ def evaluate_model(model, batches, *, device, vocab_size, progress=None):
     return {"loss": loss, "perplexity": perplexity, "perplexity_overflow": perplexity is None,
             "next_token_accuracy": total_correct / total_tokens, "correct_tokens": total_correct,
             "valid_tokens": total_tokens, "batches": len(batches)}
+
+
+def evaluate_trajectory_snapshot(model, payload, batches, *, device, vocab_size,
+                                 initial_sha, initial_metrics):
+    """Verify shared step zero and evaluate immutable parameter exports."""
+    parameters = dict(model.named_parameters())
+    saved = payload["parameters"]
+    if saved.keys() != parameters.keys() or any(saved[n].shape != p.shape or not torch.isfinite(saved[n]).all() for n,p in parameters.items()):
+        raise ValueError("invalid trajectory parameters")
+    if payload["step"] == 0:
+        if parameter_fingerprint(saved) != initial_sha:
+            raise ValueError("trajectory step 0 differs from shared initialization")
+        return dict(initial_metrics)
+    with torch.no_grad():
+        for name, parameter in parameters.items():
+            parameter.copy_(saved[name])
+    return evaluate_model(model, batches, device=device, vocab_size=vocab_size)

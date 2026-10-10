@@ -39,7 +39,7 @@ def options_for(config):
 
 
 def configuration(method, **changes):
-    source = load_config(ROOT / "decoupled_heloco.yaml")
+    source = load_config(ROOT / "run_script" / "decoupled_heloco.yaml")
     run = {**source.run, "islands": 2, "gpus": [0, 1], "steps": 12, "sync_steps": 3,
            "ps_timeout": 30.0, "island_slowness_factors": [1, 2], **changes}
     return ExperimentConfig(method, run=run, decoupled=source.decoupled)
@@ -96,7 +96,7 @@ class BaselineConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory) / "reference"
             folder.mkdir()
-            config = load_config(ROOT / "decoupled_heloco.yaml")
+            config = load_config(ROOT / "run_script" / "decoupled_heloco.yaml")
             config = ExperimentConfig(config.method, run={**config.run, "steps": 500, "island_slowness_factors": [1, 2, 3, 1]}, decoupled=config.decoupled)
             saved = options_for(config)
             (folder / "experiment.yaml").write_text(yaml.safe_dump({"method": config.method, "run": config.run}))

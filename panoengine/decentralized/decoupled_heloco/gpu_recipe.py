@@ -63,6 +63,8 @@ def validate_training_options(config, options):
     if config.method not in DECOUPLED_METHODS:
         raise ConfigError("GPU training requires a decoupled method")
     validate_dense_options(options)
+    if config.decoupled.stopping == "syncer_steps" and options.tokens_per_parameter is not None:
+        raise ConfigError("syncer_steps stopping cannot also select a token-derived local budget")
 
 
 def validate_dense_options(options):
@@ -94,7 +96,15 @@ def dense_parallelize(model, **_kwargs):
     return model
 
 
-def build_recipe(options, repo_root, dump_folder, *, learner_id=None):
+def configure_clock_learning_rate(cfg, config):
+    """Avoid the old local stopping horizon decaying LR to zero in clock mode."""
+    if config is not None and config.decoupled.stopping == "syncer_steps" and config.decoupled.clock_lr_schedule == "constant":
+        cfg.lr_scheduler.warmup_steps = 0
+        cfg.lr_scheduler.min_lr_factor = 1.0
+        cfg.lr_scheduler.decay_type = "linear"
+
+
+def build_recipe(options, repo_root, dump_folder, *, learner_id=None, experiment_config=None):
     from torchtitan.config import ConfigManager
     from torchtitan.components.checkpointer import CheckpointManager
     from torchtitan.components.optimizer import OptimizersContainer
@@ -146,6 +156,7 @@ def build_recipe(options, repo_root, dump_folder, *, learner_id=None):
     cfg.metrics.enable_tensorboard = False
     cfg.metrics.enable_wandb = False
     cfg.dataloader.num_workers = 0
+    configure_clock_learning_rate(cfg, experiment_config)
     if learner_id is not None:
         cfg.dataloader = IslandDataLoaderConfig(cfg.dataloader, options.islands, learner_id)
     return cfg

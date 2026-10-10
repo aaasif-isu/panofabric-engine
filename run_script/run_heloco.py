@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    default_cfg = REPO_ROOT / "heloco.yaml"
+    default_cfg = Path(__file__).resolve().parent / "heloco.yaml"
     p.add_argument("--config-file",
                    default=str(default_cfg) if default_cfg.exists() else None,
                    help="YAML file whose keys are these options (underscored, e.g. "
@@ -544,7 +544,7 @@ def trainer_cmd(args, island: int) -> list[str]:
         "--role", "rank",
         "--tee", "3",
         # "-m", "torchtitan.train",
-        str(REPO_ROOT / "torchtitan_step0_train.py"),
+        str(Path(__file__).resolve().parent / "torchtitan_step0_train.py"),
         "--module", args.module,
         "--config", args.config,
         f"--debug.seed={args.seed}",

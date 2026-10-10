@@ -33,7 +33,10 @@ def _wait_message(transport, deadline):
     raise TimeoutError("learner handshake timed out")
 
 
-def _serve_learner(transport, learner, started, pause, parked, stop, finished, failures, *, training_done=None):
+def _serve_learner(transport, learner, started, pause, parked, stop, finished, failures, *, training_done=None, deadline=None):
+    def send(kind, body):
+        transport.send_reliable(kind, body, deadline=deadline)
+
     captures = {}
     last_report = 0.0
     pause_reported = False
@@ -41,8 +44,8 @@ def _serve_learner(transport, learner, started, pause, parked, stop, finished, f
     try:
         while True:
             if finished.is_set():
-                transport.send("stopped", {"metadata": asdict(learner.metadata())})
-                transport.flush()
+                send("stopped", {"metadata": asdict(learner.metadata())})
+                transport.flush(timeout=60. if deadline is None else max(.001, deadline-time.monotonic()))
                 return
             while True:
                 message = transport.receive()
@@ -56,7 +59,7 @@ def _serve_learner(transport, learner, started, pause, parked, stop, finished, f
                     try:
                         future = learner.request_snapshot(request_id, body["fragment_id"], body["expected_revision"], min_local_steps=body["min_local_steps"])
                     except Exception as exc:
-                        transport.send("snapshot_error", {"request_id": request_id, "error": str(exc)})
+                        send("snapshot_error", {"request_id": request_id, "error": str(exc)})
                     else:
                         captures[request_id] = (future, False)
                 elif kind == "release":
@@ -64,8 +67,10 @@ def _serve_learner(transport, learner, started, pause, parked, stop, finished, f
                     learner.release_snapshot(request_id)
                     captures.pop(request_id, None)
                 elif kind == "update":
-                    learner.queue_update(body["fragment_id"], body["parameters"], body["revision"], layout_signature=body["layout_signature"])
-                    transport.send("update_ack", {"metadata": asdict(learner.metadata())})
+                    learner.queue_update(body["fragment_id"], body["parameters"], body["revision"], layout_signature=body["layout_signature"], global_step=body.get("global_step", 0))
+                    send("update_ack", {"metadata": asdict(learner.metadata())})
+                elif kind == "syncer_clock":
+                    learner.queue_syncer_clock(body["global_step"])
                 elif kind == "pause":
                     pause.set()
                 elif kind == "stop":
@@ -79,19 +84,19 @@ def _serve_learner(transport, learner, started, pause, parked, stop, finished, f
                 try:
                     snapshot = future.result()
                 except Exception as exc:
-                    transport.send("snapshot_error", {"request_id": request_id, "error": str(exc)})
+                    send("snapshot_error", {"request_id": request_id, "error": str(exc)})
                 else:
-                    transport.send("snapshot", {"request_id": request_id, "snapshot": snapshot_to_wire(snapshot)})
+                    send("snapshot", {"request_id": request_id, "snapshot": snapshot_to_wire(snapshot)})
                 captures[request_id] = (future, True)
             if parked.is_set() and not pause_reported:
-                transport.send("paused", {"metadata": asdict(learner.metadata())})
+                send("paused", {"metadata": asdict(learner.metadata())})
                 pause_reported = True
             if training_done is not None and training_done.is_set() and not done_reported:
-                transport.send("training_done", {"metadata": asdict(learner.metadata())})
+                send("training_done", {"metadata": asdict(learner.metadata())})
                 done_reported = True
             now = time.monotonic()
             if started.is_set() and now - last_report >= 0.02:
-                transport.send("metadata", {"metadata": asdict(learner.metadata())})
+                transport.send_progress({"metadata": asdict(learner.metadata())})
                 last_report = now
             time.sleep(0.002)
     except Exception as exc:
@@ -111,7 +116,7 @@ def _learner_process(address, token, learner_id, config, timeout):
             raise ValueError("expected global initialization before training")
         model = _TinyTokenModel(config.decoupled.num_fragments)
         model.load_state_dict(message["body"]["parameters"])
-        learner = DecoupledLearner(model, config.decoupled.num_fragments, learner_id=learner_id)
+        learner = DecoupledLearner(model, config.decoupled.num_fragments, learner_id=learner_id, max_snapshot_requests=config.decoupled.max_inflight_captures)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
         transport.send("ready", {"pid": os.getpid(), "metadata": asdict(learner.metadata())})
         started, pause, parked, stop, finished = (threading.Event() for _ in range(5))
@@ -251,8 +256,8 @@ def _run(config, learners, cycles, timeout):
                 raise ValueError("learner process identity mismatch")
             by_id[learner_id] = peer
         peers = [by_id[i] for i in range(learners)]
-        syncer = DecoupledSyncer(model, peers, decoupled.num_fragments, min_quorum=decoupled.min_quorum, overlap_steps=decoupled.overlap_steps, outer_lr=config.run.get("outer_lr", 0.7), outer_method=config.fragment_outer_method, outer_momentum=config.run.get("outer_momentum", 0.9), heloco=decoupled.heloco)
-        controller = TimedSyncController(syncer, sync_interval=decoupled.sync_interval, grace_window_factor=decoupled.grace_window_factor)
+        syncer = DecoupledSyncer(model, peers, decoupled.num_fragments, min_quorum=decoupled.min_quorum, overlap_steps=decoupled.overlap_steps, outer_lr=config.run.get("outer_lr", 0.7), outer_method=config.fragment_outer_method, outer_momentum=config.run.get("outer_momentum", 0.9), heloco=decoupled.heloco, weighting=decoupled.weighting, merge=decoupled.merge, scheduler=decoupled.scheduler, sync_period=decoupled.sync_period, fragment_offsets=decoupled.fragment_offsets, min_local_steps=decoupled.min_local_steps, max_inflight_captures=decoupled.max_inflight_captures, syncer_shards=decoupled.syncer_shards, syncer_timeout=decoupled.syncer_timeout)
+        controller = TimedSyncController(syncer, sync_interval=decoupled.sync_interval, grace_window_factor=decoupled.grace_window_factor, adaptive_grace=decoupled.adaptive_grace, ema_alpha=decoupled.timing_ema_alpha)
         for peer in peers:
             peer.transport.send("start", {})
         started = time.monotonic()
@@ -302,6 +307,8 @@ def _run(config, learners, cycles, timeout):
         print(f"PROCESS SMOKE TEST FAILED: {exc}", file=sys.stderr)
         return 2
     finally:
+        if syncer is not None:
+            syncer.close()
         for transport in transports:
             transport.close()
         listener.close()

@@ -133,7 +133,8 @@ class SyncerTests(unittest.TestCase):
         with patch.object(self.learners[2], "queue_update", side_effect=RuntimeError("temporary delivery failure")):
             result = self.syncer.poll()
             self.assertEqual(result.pending_broadcast, (2,))
-            self.assertIsNone(self.syncer.begin_sync())
+            self.assertEqual(self.syncer.begin_sync().fragment_id, 1)
+            self.syncer.cancel_sync()
         committed = self.syncer.optimizer.model_snapshot()["a"]
         self.assertEqual(self.syncer.retry_broadcast(), ())
         torch.testing.assert_close(self.syncer.optimizer.model_snapshot()["a"], committed)

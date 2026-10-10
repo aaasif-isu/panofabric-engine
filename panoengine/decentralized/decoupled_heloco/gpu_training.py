@@ -24,7 +24,7 @@ from .syncer import DecoupledSyncer
 from .timing import TimedSyncController
 from .transport import FramedTransport, MAX_FRAME_BYTES, RemoteLearner, encode_message, metadata_from_wire
 
-STOPPING_POLICY = "fixed_local_budgets_drain_to_first_unavailable_round_robin_quorum"
+STOPPING_POLICY = "fixed_local_budgets_drain_to_first_unavailable_scheduled_quorum"
 
 
 def outer_optimizer_metadata(config, options):
@@ -34,7 +34,8 @@ def outer_optimizer_metadata(config, options):
             "momentum_convention": "sum" if diloco else "ema",
             "correction_enabled": False if diloco else config.decoupled.heloco.correction_enabled,
             "lookahead": False if diloco else config.decoupled.heloco.lookahead,
-            "merge": "token_weighted_average"}
+            "merge": config.decoupled.merge, "weighting": config.decoupled.weighting,
+            "correction_order": config.decoupled.heloco.correction_order if not diloco else None}
 
 
 def select_devices(options, visible_devices, device_count):
@@ -77,7 +78,7 @@ def preflight(config, options, repo_root):
     assets = (Path(repo_root) / options.hf_assets).resolve()
     if not assets.is_dir():
         raise ConfigError(f"tokenizer directory does not exist: {assets}; set run.hf_assets to your existing debug tokenizer")
-    cfg = build_recipe(options, repo_root, Path(repo_root) / options.log_dir)
+    cfg = build_recipe(options, repo_root, Path(repo_root) / options.log_dir, experiment_config=config)
     tokenizer = cfg.tokenizer.build(tokenizer_path=cfg.hf_assets_path)
     vocab_size, max_token_id = validate_tokenizer(tokenizer, cfg.model_spec.model.vocab_size)
     print(f"Tokenizer compatible: vocabulary={vocab_size}, max_token_id={max_token_id}, model_vocab_size={cfg.model_spec.model.vocab_size}")
@@ -85,39 +86,60 @@ def preflight(config, options, repo_root):
     manager = validate_frame_sizes(model, config.decoupled.num_fragments)
     if options.tokens_per_parameter is not None:
         options.steps = math.ceil(options.tokens_per_parameter * manager.total_numel / (options.islands * options.batch * options.seq_len))
-    if options.steps < config.decoupled.overlap_steps:
-        raise ConfigError("the resolved training budget is smaller than overlap_steps; increase run.steps or the token budget")
-    print(f"GPU preflight passed: learners={options.islands}, parameters={manager.total_numel:,}, steps_per_learner={options.steps}, device_masks={devices}")
+    if config.decoupled.stopping == "local_steps" and options.steps < config.decoupled.capture_min_steps:
+        raise ConfigError("the resolved training budget is smaller than min_local_steps; increase run.steps or the token budget")
+    print(f"GPU preflight passed: learners={options.islands}, parameters={manager.total_numel:,}, local_steps_setting={options.steps}, device_masks={devices}")
+    print(f"CPU syncer replicas: {config.decoupled.syncer_shards}; same-host IPC fragment all-reduce; timeout={config.decoupled.syncer_timeout}s")
     print("Recipe: dense FP32 Llama 15M, FlexAttention, plain AdamW; IID data sharded across learners.")
-    print(f"Outer optimizer: {config.fragment_outer_method}; stopping: fixed local budgets and quorum-preserving drain.")
+    budget = (f"syncer clock t={config.decoupled.syncer_steps}; local run.steps is not a stopping budget"
+              if config.decoupled.stopping == "syncer_steps" else "fixed local budgets and quorum-preserving drain")
+    print(f"Outer optimizer: {config.fragment_outer_method}; stopping: {budget}.")
+    if config.decoupled.stopping == "syncer_steps":
+        print(f"Clock-mode inner LR schedule: {config.decoupled.clock_lr_schedule} (local_horizon uses run.steps).")
     print("Dataset iteration and CUDA forward/backward will be checked during training.")
     return model, devices
 
 
 def delivered(syncer, peers):
     revisions = syncer.fragment_revisions
-    return not syncer.retry_broadcast() and all(f.last_applied_revision == revisions[f.fragment_id] for peer in peers for f in peer.metadata().fragments)
+    syncer.retry_broadcast()
+    return all(f.last_applied_revision == revisions[f.fragment_id] for peer in peers if peer.available for f in peer.metadata().fragments)
 
 
 def drain_complete(syncer, peers):
     """Stop at the first unavailable round-robin quorum after budgets end."""
-    if not all(peer.training_done for peer in peers) or syncer.has_active_sync or not delivered(syncer, peers):
+    if not all(peer.training_done for peer in peers if peer.available) or syncer.has_active_sync or not delivered(syncer, peers):
         return False
     fragment_id = syncer.scheduler.fragment_id
-    return syncer.scheduler.plan((p.metadata() for p in peers), fragment_revision=syncer.fragment_revisions[fragment_id]) is None
+    return syncer.scheduler.plan(syncer.learner_metadata(), fragment_revision=syncer.fragment_revisions[fragment_id]) is None
 
 
-def _pump_until(peers, processes, deadline, predicate):
+def _pump_until(peers, processes, deadline, predicate, *, min_quorum=None):
     while time.monotonic() < deadline:
         for peer in peers:
             peer.pump()
         for index, process in enumerate(processes):
             if process.poll() is not None and (index >= len(peers) or not peers[index].stopped):
-                raise RuntimeError(f"learner {index} exited early; inspect learner_{index}/trainer.log")
+                if min_quorum is None or index >= len(peers):
+                    raise RuntimeError(f"learner {index} exited early; inspect learner_{index}/trainer.log")
+                peers[index].mark_unavailable(f"learner {index} exited early; inspect learner_{index}/trainer.log")
+        if min_quorum is not None and sum(peer.available for peer in peers) < min_quorum:
+            raise RuntimeError(f"available learner count is below min_quorum={min_quorum}; cannot continue safely")
         if predicate():
             return
         time.sleep(0.005)
     raise TimeoutError("GPU run exceeded --training-timeout; inspect learner logs or increase the deadline")
+
+
+def _send_available(peers, kind):
+    """Isolate disconnects that race with start/pause/stop control messages."""
+    for peer in peers:
+        if not peer.available:
+            continue
+        try:
+            peer.transport.send_reliable(kind, {}, deadline=peer.deadline, progress=lambda: [p.pump() for p in peers])
+        except (ConnectionError, OSError) as exc:
+            peer.mark_unavailable(exc)
 
 
 def run_gpu_training(config, options, repo_root, *, timeout=1800.0, check_only=False, output_dir=None):
@@ -158,11 +180,16 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
     transports, processes, peers, logs = [], [], [], []
     from .evaluation import parameter_fingerprint
 
-    manifest = {"status": "starting", "scope": "dense_single_gpu_localhost", "devices": devices, "steps_per_learner": options.steps, "checkpoint_resumable": False,
+    manifest = {"status": "starting", "scope": "dense_single_gpu_localhost", "devices": devices, "steps_per_learner": options.steps if config.decoupled.stopping == "local_steps" else None, "checkpoint_resumable": False,
                 "method": config.method, "outer_optimizer": outer_optimizer_metadata(config, options),
-                "stopping_policy": STOPPING_POLICY,
+                "stopping_policy": STOPPING_POLICY if config.decoupled.stopping == "local_steps" else "shared_syncer_clock_with_final_revision_drain",
+                "stopping_mode": config.decoupled.stopping, "syncer_step_target": config.decoupled.syncer_steps,
+                "scheduler": config.decoupled.scheduler, "max_inflight_captures": config.decoupled.max_inflight_captures,
+                "syncer_shards": config.decoupled.syncer_shards,
+                "clock_lr_schedule": config.decoupled.clock_lr_schedule if config.decoupled.stopping == "syncer_steps" else None,
                 "initial_parameters_sha256": parameter_fingerprint(dict(model.named_parameters()))}
     syncer = None
+    monitor = None
     try:
         manager = validate_frame_sizes(model, config.decoupled.num_fragments)
         initial = _cpu_copy(dict(model.named_parameters()))
@@ -221,57 +248,96 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
             if peer.metadata().learner_id != learner_id or peer.pid != processes[learner_id].pid:
                 raise ValueError("learner handshake identity changed")
             by_id[learner_id] = peer
+        del initial
         peers = [by_id[i] for i in range(options.islands)]
+        for peer in peers:
+            peer.deadline = deadline
         d = config.decoupled
-        syncer = DecoupledSyncer(model, peers, d.num_fragments, min_quorum=d.min_quorum, overlap_steps=d.overlap_steps, outer_lr=options.outer_lr, outer_method=config.fragment_outer_method, outer_momentum=options.outer_momentum, heloco=d.heloco)
-        controller = TimedSyncController(syncer, sync_interval=d.sync_interval, grace_window_factor=d.grace_window_factor)
+        syncer = DecoupledSyncer(model, peers, d.num_fragments, min_quorum=d.min_quorum, overlap_steps=d.overlap_steps, outer_lr=options.outer_lr, outer_method=config.fragment_outer_method, outer_momentum=options.outer_momentum, heloco=d.heloco, weighting=d.weighting, merge=d.merge, scheduler=d.scheduler, sync_period=d.sync_period, fragment_offsets=d.fragment_offsets, min_local_steps=d.min_local_steps, max_inflight_captures=d.max_inflight_captures, syncer_shards=d.syncer_shards, syncer_timeout=d.syncer_timeout)
+        del model
+        from .monitoring import CentralMonitor
+        monitor = CentralMonitor(folder, config.monitoring, replica_pids=syncer.optimizer.pids if d.syncer_shards > 1 else (), replica_resources=getattr(syncer.optimizer, "resource_paths", ()))
+        manifest["syncer_replica_pids"] = list(getattr(syncer.optimizer, "pids", ()))
+        syncer.monitor = monitor
+        monitor.trajectory.clock_provider = lambda: syncer.global_step
+        monitor.trajectory.save_from(0, syncer.optimizer.model_snapshot, force=True)
+        controller = TimedSyncController(syncer, sync_interval=d.sync_interval, grace_window_factor=d.grace_window_factor, adaptive_grace=d.adaptive_grace, ema_alpha=d.timing_ema_alpha, max_global_step=d.syncer_steps if d.stopping == "syncer_steps" else None)
         print(f"GPU training started: syncer_pid={os.getpid()}, learner_pids={[p.pid for p in peers]}", flush=True)
         print(f"Logs: {folder}", flush=True)
         started = time.monotonic()
-        for peer in peers:
-            peer.transport.send("start", {})
-        with (folder / "syncs.csv").open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=("elapsed_s", "sync_step", "fragment_id", "fragment_revision", "learner_ids", "local_steps", "tokens", "weights"))
+        monitor.trajectory.origin = started
+        _send_available(peers, "start")
+        with (folder / "syncs.csv").open("w", newline="", encoding="utf-8") as stream, (folder / "capture_events.csv").open("w", newline="", encoding="utf-8") as capture_stream:
+            writer = csv.DictWriter(stream, fieldnames=("elapsed_s", "sync_step", "global_step", "fragment_id", "fragment_revision", "learner_ids", "local_steps", "tokens", "weights"))
             writer.writeheader()
+            capture_writer = csv.DictWriter(capture_stream, fieldnames=("event", "elapsed_s", "sync_step", "global_step", "fragment_id", "inflight_captures"))
+            capture_writer.writeheader()
+            def record_capture(event):
+                capture_writer.writerow({**event, "elapsed_s": event["elapsed_s"] - started})
+                capture_stream.flush()
+            controller.event_sink = record_capture
+
+            terminal_sent = set()
 
             def synchronize():
+                clock_mode = d.stopping == "syncer_steps"
+                if clock_mode and syncer.scheduler.global_step > d.syncer_steps:
+                    # No captures beyond T. Apply all committed revisions before
+                    # announcing an idle terminal slot (e.g. sparse offsets).
+                    if syncer.has_active_sync:
+                        raise RuntimeError("an active capture crossed the syncer-clock target")
+                    if not delivered(syncer, peers):
+                        return False
+                    syncer.global_step = d.syncer_steps
+                    for peer in peers:
+                        if not peer.available or peer.metadata().learner_id in terminal_sent:
+                            continue
+                        try:
+                            peer.transport.send_reliable("syncer_clock", {"global_step": d.syncer_steps}, deadline=deadline, progress=lambda: [p.pump() for p in peers])
+                            terminal_sent.add(peer.metadata().learner_id)
+                        except (ConnectionError, OSError) as exc:
+                            peer.mark_unavailable(exc)
+                    if sum(peer.available for peer in peers) < d.min_quorum:
+                        raise RuntimeError("available learner count fell below quorum during terminal clock delivery")
+                    return all(peer.training_done and peer.metadata().syncer_step == d.syncer_steps
+                               for peer in peers if peer.available) and delivered(syncer, peers)
                 result = controller.tick()
                 if result is not None:
                     row = asdict(result)
                     writer.writerow({"elapsed_s": time.monotonic() - started, **{key: json.dumps(row[key]) if isinstance(row[key], tuple) else row[key] for key in writer.fieldnames if key != "elapsed_s"}})
                     stream.flush()
-                    print(f"sync={result.sync_step} fragment={result.fragment_id} revision={result.fragment_revision} learners={list(result.learner_ids)} tokens={list(result.tokens)}", flush=True)
-                return drain_complete(syncer, peers)
+                    print(f"sync={result.sync_step} global_step={result.global_step} fragment={result.fragment_id} revision={result.fragment_revision} learners={list(result.learner_ids)} tokens={list(result.tokens)}", flush=True)
+                return False if clock_mode else drain_complete(syncer, peers)
 
-            _pump_until(peers, processes, deadline, synchronize)
-        for peer in peers:
-            peer.transport.send("pause", {})
-        _pump_until(peers, processes, deadline, lambda: all(peer.paused for peer in peers))
+            _pump_until(peers, processes, deadline, synchronize, min_quorum=d.min_quorum)
+        _send_available(peers, "pause")
+        _pump_until(peers, processes, deadline, lambda: all(peer.paused for peer in peers if peer.available), min_quorum=d.min_quorum)
         if not delivered(syncer, peers):
             raise RuntimeError("final fragment revisions were not applied by every learner")
-        for peer in peers:
-            peer.transport.send("stop", {})
-        _pump_until(peers, processes, deadline, lambda: all(peer.stopped for peer in peers))
-        for process in processes:
-            process.wait(timeout=max(0.001, min(5.0, deadline - time.monotonic())))
-            if process.returncode != 0:
-                raise RuntimeError("a GPU learner failed during shutdown; inspect its trainer.log")
+        _send_available(peers, "stop")
+        _pump_until(peers, processes, deadline, lambda: all(peer.stopped for peer in peers if peer.available), min_quorum=d.min_quorum)
+        from .shutdown import wait_for_learner_shutdown
+        wait_for_learner_shutdown({i:process for i,(peer,process) in enumerate(zip(peers, processes)) if peer.available}, deadline, folder)
         metadata = [asdict(peer.metadata()) for peer in peers]
-        if any(peer.metadata().total_local_steps != options.steps for peer in peers):
+        if d.stopping == "syncer_steps" and any(peer.metadata().syncer_step != d.syncer_steps for peer in peers if peer.available):
+            raise RuntimeError("a learner did not reach the configured syncer-clock budget")
+        if d.stopping == "local_steps" and any(peer.metadata().total_local_steps != options.steps for peer in peers if peer.available):
             raise RuntimeError("a learner did not complete its configured optimizer-step budget")
-        if not all(revision >= 1 for revision in syncer.fragment_revisions):
+        if d.stopping == "local_steps" and not all(revision >= 1 for revision in syncer.fragment_revisions):
             raise RuntimeError("training ended without synchronizing every fragment; increase run.steps")
         final_parameters = syncer.optimizer.model_snapshot()
+        monitor.trajectory.save(syncer.scheduler.sync_step, final_parameters, tokens=sum(p.metadata().total_tokens for p in peers), force=True, final=True)
         if any(not torch.isfinite(value).all() for value in final_parameters.values()):
             raise RuntimeError("final global model contains nonfinite parameters")
         # Retain the Phase 7 schema identifier for backward compatibility;
         # the explicit method tag identifies the selected outer optimizer.
-        torch.save({"format": "decoupled_heloco_global_v1", "method": config.method, "parameters": final_parameters, "fragment_revisions": syncer.fragment_revisions, "layout_signature": manager.layout_signature, "resumable": False}, folder / "global_model.pt")
-        manifest.update(status="passed", elapsed_s=time.monotonic() - started, fragment_revisions=syncer.fragment_revisions, sync_updates=syncer.scheduler.sync_step, capture_timeouts=controller.timeouts, learners=metadata, wire_sent_bytes=sum(t.sent_bytes for t in transports), wire_received_bytes=sum(t.received_bytes for t in transports))
+        torch.save({"format": "decoupled_heloco_global_v1", "method": config.method, "parameters": final_parameters, "fragment_revisions": syncer.fragment_revisions, "layout_signature": manager.layout_signature, "resumable": False, "syncer_step": syncer.global_step}, folder / "global_model.pt")
+        failed_learners = {str(peer.metadata().learner_id): peer.failure for peer in peers if not peer.available}
+        manifest.update(status="passed", degraded=bool(failed_learners), failed_learners=failed_learners, completed_learner_ids=[peer.metadata().learner_id for peer in peers if peer.available], elapsed_s=time.monotonic() - started, fragment_revisions=syncer.fragment_revisions, sync_updates=syncer.scheduler.sync_step, syncer_step=syncer.global_step, peak_inflight_captures=syncer.peak_inflight_captures, capture_timeouts=controller.timeouts, next_global_schedule_step=syncer.scheduler.global_step, learners=metadata, wire_sent_bytes=sum(t.sent_bytes for t in transports), wire_received_bytes=sum(t.received_bytes for t in transports))
         print(f"Final fragment revisions: {list(syncer.fragment_revisions)}", flush=True)
         print(f"Local optimizer steps: {[p.metadata().total_local_steps for p in peers]}", flush=True)
         print(f"Capture timeouts: {controller.timeouts}", flush=True)
-        print("GPU TRAINING CHECK PASSED: fixed local budgets, fragment transfers, final revisions, and clean shutdown verified.", flush=True)
+        print("GPU TRAINING CHECK PASSED: surviving learners completed their selected budgets, fragment transfers, final revisions, and clean shutdown." + (f" Degraded run: {failed_learners}" if failed_learners else ""), flush=True)
         return 0
     except KeyboardInterrupt:
         manifest.update(status="interrupted", error="interrupted by user")
@@ -281,6 +347,17 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
         print(f"GPU TRAINING CHECK FAILED: {exc}\nLogs: {folder}", file=sys.stderr, flush=True)
         return 2
     finally:
+        if monitor is not None:
+            monitor.close()
+            monitor = None
+        if syncer is not None:
+            if syncer.syncer_shards > 1:
+                with (folder / "syncer_replica_processing.csv").open("w", newline="") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=("rank", "wall_s", "process_cpu_s", "collective_tensor_bytes"))
+                    writer.writeheader()
+                    writer.writerows(syncer.optimizer.stats)
+            syncer.close()
+        (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
         for transport in transports:
             transport.close()
         listener.close()
@@ -293,6 +370,8 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2.0)
+        if monitor is not None:
+            monitor.close()
         for log in logs:
             log.close()
         (folder / "summary.json").write_text(json.dumps(manifest, indent=2))

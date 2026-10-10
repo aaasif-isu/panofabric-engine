@@ -1,67 +1,139 @@
-# One command trains these methods sequentially, then evaluates all globals.
-method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
+# Train sequentially, then evaluate on the same frozen held-out batches.
+# Choose any nonempty subset of these five names; duplicates are rejected.
+#method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
+method_run: [decoupled_heloco, decoupled_diloco]
 
-# Common numerical recipe and local budget for every method.
 run:
-  islands: 4
-  gpus_per_island: 1
-  gpus: [0, 1, 2, 3]
-  module: models.llama3_small
-  config: llama3_15m
-  hf_assets: ./assets/tokenizer/debug
-  dataset: c4
-  steps: 40
-  seq_len: 512
-  batch: 1
-  tokens_per_parameter: null
-  seed: 42
-  data_distribution: iid
-  languages: []
+  islands: 4                   # Independent learners; one learner per GPU here.
+  gpus_per_island: 1           # Current comparison supports exactly 1.
+  gpus: [0, 1, 2, 3]          # Distinct GPU IDs visible to this job.
+  module: models.llama3_small  # Current dense comparison supports this module.
+  config: llama3_15m           # Current dense comparison supports this model.
+  hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
+  dataset: c4                 # Supported: c4 or local c4_test.
+  steps: 500                   # Optimizer steps PER learner, PER method.
+                              # Whole-model baselines require steps % sync_steps == 0.
+  seq_len: 512                # Training sequence length; positive integer.
+  batch: 1                    # Training batch size per learner; positive integer.
+  tokens_per_parameter: null   # Keep null: comparison requires fixed run.steps.
+  seed: 42                    # Shared initialization/data seed.
+  data_distribution: iid      # Current comparison supports iid only.
+  languages: []               # Keep empty; language-specific non-IID is pending.
   island_slowness_factors: [1, 2, 3, 1]
-  coordination_method: async
-  async_interval: 1
-  max_wait_time: 0.0
-  # Original methods exchange the whole model every 10 local steps.
-  sync_steps: 20
-  num_fragments: 1
-  outer_lr: 0.7
-  outer_momentum: 0.9
-  rho: null
-  should_quantize: false
-  correction_workers: all
-  correction_scope: tensorwise
-  correction_heatmap: false
-  other_islands_method: heloco_uncorrected
-  host: 127.0.0.1
-  ps_timeout: 600.0
-  log_dir: outputs/method_comparison
-  extra: []
+                              # One factor per learner, each >= 1.
+                              # 1: no added delay; 2/3: target 2x/3x step duration.
+                              # Homogeneous alternative: [1, 1, 1, 1].
+  coordination_method: async  # Required by the current comparison.
+  async_interval: 1           # Required baseline setting; keep 1.
+  max_wait_time: 0.0          # Required baseline setting; keep 0.
+  sync_steps: 50              # Whole-model upload after each 20 local steps.
+                              # Applies to heloco/diloco/mla, not decoupled scheduling.
+  num_fragments: 1            # Keep 1 here; new fragmentation is in decoupled below.
+  outer_lr: 0.7               # Outer optimizer learning rate; finite >= 0.
+  outer_momentum: 0.9         # Outer momentum; 0 <= value < 1.
+  rho: null                  # Keep null in this mixed comparison.
+                              # Original HeLoCo resolves null to 1/sqrt(islands)=0.5.
+                              # Decoupled HeLoCo uses its own rho below.
+  should_quantize: false      # Current comparison supports false only; FP32 wire.
+  correction_workers: all    # Required here; worker-selection ablations unavailable.
+  correction_scope: tensorwise  # Required here; whole_gradient unavailable.
+  correction_heatmap: false  # Current comparison supports false only.
+  other_islands_method: heloco_uncorrected  # Required baseline setting.
+  host: 127.0.0.1            # Supported: 127.0.0.1 or localhost; one-host launch.
+  ps_timeout: 600.0          # Positive startup/connection timeout, seconds.
+  log_dir: outputs/method_comparison  # Parent directory for new run outputs.
+  extra: []                  # Keep empty; arbitrary trainer overrides unsupported.
 
-# Fragment/quorum controls used only by the two decoupled methods.
+# Used only by decoupled_heloco and decoupled_diloco.
 decoupled:
-  num_fragments: 4
-  min_quorum: 2
-  overlap_steps: 5
-  sync_interval: 1.0
-  grace_window_factor: 0.8
-  scheduler: round_robin
-  merge: weighted_average
+  num_fragments: 4            # Split canonical parameter tensors into 4 groups.
+                              # Whole tensors stay intact; groups need not be equal.
+  max_inflight_captures: 2    # UPDATED: 1=serial; integer 2..num_fragments=pipeline.
+                              # Distinct fragments overlap; commits stay ordered.
+                              # More in-flight snapshots consume more memory.
+  syncer_shards: 4            # UPDATED: 4 persistent CPU replicas for 4 learners.
+                              # 1=central optimizer; >1=same-host IPC all-reduce.
+                              # Each replica holds full global weights/outer state.
+  syncer_timeout: 60.0        # Positive replica startup/response/collective timeout.
+                              # Replica failure aborts; learner failure can use quorum.
+  min_quorum: 2               # Minimum valid learner contributions per update.
+                              # Integer 1..islands; 4 requires all four learners.
+  overlap_steps: 2            # Compute-overlap budget for adaptive grace/timeouts.
+                              # Also default readiness threshold in round_robin.
+                              # With paper_offsets, this is NOT a fixed local window.
+  sync_interval: 1.0          # Positive seconds; round_robin admission spacing.
+                              # Paper scheduling uses measured learner-step pace;
+                              # this also supplies its fallback pace/timeout floor.
+  grace_window_factor: 0.8    # [0,1]; extra waiting after captured quorum is ready.
+                              # 0=commit/freeze immediately when quorum is ready.
+                              # adaptive=false: grace=sync_interval*factor.
+
+  stopping: syncer_steps       # Required for this mixed five-method comparison.
+                              # Alternative: syncer_steps, local_steps, decoupled-only runs.
+  syncer_steps: 1000          # Must be null with local_steps.
+                              # Clock mode requires positive T and paper_offsets.
+                              # T counts global schedule slots, not local steps/cycles.
+  clock_lr_schedule: constant # Clock mode only: constant or local_horizon.
+                              # constant: no warmup/decay; local_horizon: recipe
+                              # schedule using run.steps as its local LR horizon.
+                              # Ignored for local_steps; existing recipe LR applies.
+
+  scheduler: paper_offsets   # Options: paper_offsets or round_robin.
+                              # paper_offsets selects fragment p when t mod H=t_p.
+                              # round_robin repeatedly selects fragments 0,1,2,3.
+  sync_period: 4           # H for paper_offsets; null resolves to num_fragments=4.
+                              # Explicit H must be integer >= num_fragments.
+                              # H is a clock period, not run.sync_steps or seconds.
+  fragment_offsets: [0,1,2,3]      # null resolves to [0,1,2,3] when H=4.
+                              # Or one distinct integer per fragment in [0,H).
+                              # round_robin requires both H/offset fields to be null.
+  min_local_steps: 5       # Minimum local work since applying this fragment.
+                              # null => paper_offsets:1; round_robin:overlap_steps.
+                              # Explicit positive integer overrides either default.
+
+  merge: paper_rda            # Options: weighted_average, rda, paper_rda.
+                              # weighted_average: weighted arithmetic mean of deltas.
+                              # rda: merge directions and magnitudes for every tensor.
+                              # paper_rda: Avg recognized embeddings; RDA other tensors.
+  weighting: tokens_squared_per_step
+                              # Options: tokens_squared_per_step or tokens.
+                              # Normalized weights proportional to tokens^2/steps
+                              # or tokens, respectively; counters are per fragment.
+  adaptive_grace: true        # true: use measured remaining compute-overlap slack.
+                              # false: use the fixed interval*factor grace above.
+  timing_ema_alpha: 0.2       # (0,1]; smoothing of timing estimates.
+                              # Larger values react faster to recent measurements.
+
+  # Used only by decoupled_heloco; ignored by decoupled_diloco.
   heloco:
-    rho: 1.0
-    correction_enabled: true
-    lookahead: true
-    c_ok: 0.2
-    k_s: 0.5
-    k_d: 1.0
-    kappa: 3.0
-    beta_max: 0.5
-    eps: 1.0e-8
+    correction_order: merge_then_correct
+                              # merge_then_correct: correct the merged quorum delta.
+                              # correct_then_merge: correct each delta before merging.
+    rho: 1.0                  # Finite >=0; scales the resulting correction/delta.
+                              # Applied even when correction_enabled=false.
+    correction_enabled: true # true/false; disable directional correction for ablation.
+                              # false does not disable momentum or lookahead.
+    lookahead: true            # true/false; outgoing weights use momentum lookahead.
+    c_ok: 0.2                 # [0,1]; cosine >= this keeps direction unchanged.
+    k_s: 0.5                  # >=0; strength of opposing-component attenuation.
+    k_d: 1.0                  # >=0; strength of weak-alignment rotation to momentum.
+    kappa: 3.0                # >=0; larger values reduce correction confidence.
+    beta_max: 0.5             # [0,1]; caps opposing-component attenuation coefficient.
+    eps: 1.0e-8               # Positive numerical safeguard for small norms.
 
 evaluation:
-  enabled: true
-  batches: 100
-  device: cuda:0
-  # null freezes one held-out stream for all five fresh runs.
-  # You can instead put the path to a compatible validation_batches.pt here.
-  validation_cache: null
-  timeout: 900.0
+  enabled: true              # true/false; evaluate after sequential training.
+  batches: 100               # Held-out batch count; supported integer 1..10000.
+  device: cuda:0             # Logical CUDA device; current comparison requires CUDA.
+  validation_cache: null     # null freezes one shared held-out stream.
+                              # Or a compatible validation_batches.pt file path.
+  timeout: 900.0             # Positive evaluation timeout in seconds.
+
+monitoring:
+  enabled: false              # true/false; trajectories and measured CPU resources.
+  global_every_updates: 10    # Export global snapshot every N committed outer updates.
+                              # N>=1; 1 records every update and adds snapshot IO.
+  learner_every_steps: 100    # Export each learner snapshot every N local steps; N>=1.
+  memory_sample_seconds: 0.1 # Positive coordinator RSS sampling interval.
+                              # Replica self-sampling is currently fixed at 0.1s.
+                              # Initial/final trajectory endpoints are also retained.

@@ -26,6 +26,9 @@ class FragmentSGD:
     def model_snapshot(self) -> dict[str, torch.Tensor]:
         return {name: tensor.clone() for name, tensor in self._parameters.items()}
 
+    def dispatch_snapshot(self, fragment_id):
+        return self.snapshot(fragment_id)
+
     def step(self, fragment_id: int, gradient: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         self.manager.validate_update(fragment_id, gradient)
         gradient = _cpu_copy(gradient)
@@ -127,20 +130,23 @@ class FragmentHeLoCo(FragmentSGD):
                     values[name] = tensor.sub(self._momentum[name], alpha=self.lr * self.momentum)
         return values
 
-    def step(self, fragment_id: int, gradient: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        self.manager.validate_update(fragment_id, gradient)
-        gradient = _cpu_copy(gradient)
-        if any(not bool(torch.isfinite(tensor).all()) for tensor in gradient.values()):
-            raise ValueError("outer pseudo-gradient contains nonfinite values")
+    def correct(self, gradient):
+        """Correct against the pre-update momentum; do not advance any state."""
         if self.config.correction_enabled:
-            corrected = block_correct(
+            return block_correct(
                 gradient, {name: self._momentum.get(name) for name in gradient},
                 rho=self.config.rho, c_ok=self.config.c_ok, k_s=self.config.k_s,
                 k_d=self.config.k_d, kappa=self.config.kappa,
                 beta_max=self.config.beta_max, eps=self.config.eps,
             )
-        else:
-            corrected = {name: self.config.rho * value for name, value in gradient.items()}
+        return {name: self.config.rho * value for name, value in gradient.items()}
+
+    def step(self, fragment_id: int, gradient: Mapping[str, torch.Tensor], *, already_corrected=False) -> dict[str, torch.Tensor]:
+        self.manager.validate_update(fragment_id, gradient)
+        gradient = _cpu_copy(gradient)
+        if any(not bool(torch.isfinite(tensor).all()) for tensor in gradient.values()):
+            raise ValueError("outer pseudo-gradient contains nonfinite values")
+        corrected = gradient if already_corrected else self.correct(gradient)
         staged_weights = {}
         staged_momentum = {}
         dispatch = {}

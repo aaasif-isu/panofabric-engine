@@ -227,7 +227,7 @@ class ValidationCoordinatorTests(unittest.TestCase):
             (unrelated / "tokenizer.json").write_text('{"fixture": "unrelated tokenizer"}')
             folders = [root / name for name in ("a", "b", "c", "d", "e")]
             methods = ["decoupled_heloco", "decoupled_diloco", "heloco", "diloco", "mla"]
-            config_data = yaml.safe_load((ROOT / "decoupled_heloco.yaml").read_text())
+            config_data = yaml.safe_load((ROOT / "run_script" / "decoupled_heloco.yaml").read_text())
             config_data["decoupled"]["num_fragments"] = 2
             config_data["run"].update(seq_len=2, batch=1, hf_assets=str(assets))
             options = {**config_data["run"], "gpus": "0,1,2,3"}

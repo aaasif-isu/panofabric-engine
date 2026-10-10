@@ -136,12 +136,17 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
                 "pacing": "extra sleep = measured local train_step time * (factor - 1); HTTP time excluded",
                 "communication_accounting": "original client protocol bytes including initial/final pulls; excludes HTTP headers and heartbeats"}
     processes, logs, server = [], [], None
+    monitor = None
     deadline = time.monotonic() + timeout
     startup_deadline = min(deadline, time.monotonic() + options.ps_timeout)
     started = None
     try:
         manager = FragmentManager.from_model(model, 1)
         server = build_baseline_server(model, config, options)
+        from .monitoring import CentralMonitor, attach_baseline
+        monitor = CentralMonitor(folder, config.monitoring)
+        attach_baseline(server, model, monitor)
+        monitor.trajectory.save(0, dict(model.named_parameters()), force=True)
         write_json(folder / "server.json", {"address": server.address(), "heartbeat_address": server.heartbeat_address(),
                                              "initial_parameters_sha256": initial_hash})
         used_ports = set()
@@ -189,6 +194,7 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
                for i, row in enumerate(ready)) or server.status()["revision"] != 0:
             raise RuntimeError("baseline learners did not all adopt the identical revision-0 initialization")
         started = time.monotonic()
+        monitor.trajectory.origin = started
         print(f"Matched GPU training started: method={config.method}, server_pid={os.getpid()}, learner_pids={[p.pid for p in processes]}", flush=True)
         print(f"Logs: {folder}", flush=True)
         write_json(folder / "start.json", {"start": True})
@@ -209,10 +215,8 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
         dispatch_hash = parameter_fingerprint(dispatch)
         write_json(folder / "finalize.json", {"revision": expected_revision, "dispatch_sha256": dispatch_hash})
         learners = wait_for_files("result.json", deadline)
-        for process in processes:
-            process.wait(timeout=max(0.001, min(5.0, deadline - time.monotonic())))
-            if process.returncode != 0:
-                raise RuntimeError("baseline learner failed during finalization")
+        from .shutdown import wait_for_learner_shutdown
+        wait_for_learner_shutdown(dict(enumerate(processes)), deadline, folder)
         for learner_id, row in enumerate(learners):
             if (row.get("learner_id") != learner_id or row.get("total_local_steps") != options.steps
                     or row.get("pushes") != expected_pushes or row.get("final_dispatch_sha256") != dispatch_hash
@@ -221,6 +225,7 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
                 raise RuntimeError("baseline learner final revision, dispatch or budget verification failed")
         if server.status()["revision"] != expected_revision or server.status()["finished_count"] != options.islands:
             raise RuntimeError("baseline server changed after final pull or a learner did not announce clean completion")
+        monitor.trajectory.save(expected_revision, parameters, tokens=sum(r["total_tokens"] for r in learners), force=True)
         torch.save({"format": BASELINE_FORMAT, "method": config.method, "parameters": parameters,
                     "fragment_revisions": [expected_revision], "layout_signature": manager.layout_signature,
                     "resumable": False}, folder / "global_model.pt")
@@ -251,6 +256,8 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
                 process.wait(timeout=2.0)
         if server is not None:
             server.shutdown()
+        if monitor is not None:
+            monitor.close()
         for log in logs:
             log.close()
         write_json(folder / "summary.json", manifest)

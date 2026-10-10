@@ -28,6 +28,11 @@ def load_run(folder):
         raise ConfigError("run summary method differs from the saved experiment")
     if config.method in DECOUPLED_METHODS:
         validate_training_options(config, options)
+        if config.decoupled.stopping == "syncer_steps":
+            target = config.decoupled.syncer_steps
+            if (summary.get("stopping_mode") != "syncer_steps" or summary.get("syncer_step_target") != target
+                    or summary.get("syncer_step") != target):
+                raise ConfigError("saved run did not finish the configured syncer-clock budget")
     else:
         if summary.get("scope") != BASELINE_SCOPE:
             raise ConfigError("legacy evaluation requires a completed run from run_matched_baselines.py")
@@ -85,6 +90,35 @@ def residual_work(summary):
     return [{"learner_id": learner["learner_id"], "fragments": [
         {"fragment_id": f["fragment_id"], "local_steps": f["local_steps"], "tokens": f["tokens"]}
         for f in learner["fragments"]]} for learner in summary["learners"]]
+
+
+def validate_final_trajectory(run, kind, learner_id, payloads):
+    """Reject stale completion coordinates; preserve legacy exports explicitly."""
+    finals = [p for p in payloads if p.get("snapshot_event") == "final"]
+    if not finals:
+        failed = run["summary"].get("failed_learners", {})
+        if kind == "learner" and learner_id.removeprefix("learner_") in failed:
+            return "interrupted_learner"
+        if any("snapshot_event" in p for p in payloads):
+            raise ConfigError(f"missing final {kind} trajectory endpoint: {run['folder']}/{learner_id}")
+        return "legacy_unverified"
+    if len(finals) != 1:
+        raise ConfigError(f"multiple final {kind} trajectory endpoints")
+    learners = run["summary"]["learners"]
+    if kind == "global":
+        expected = sum(row["total_tokens"] for row in learners)
+    else:
+        identity = int(learner_id.removeprefix("learner_"))
+        matching = [row for row in learners if row["learner_id"] == identity]
+        if len(matching) != 1:
+            raise ConfigError(f"unknown trajectory learner: {learner_id}")
+        expected = matching[0]["total_tokens"]
+    final = finals[0]
+    if final["processed_tokens"] != expected:
+        raise ConfigError(f"final {kind} tokens {final['processed_tokens']} differ from completed summary {expected}")
+    if any(p["processed_tokens"] > expected or p["elapsed_s"] > final["elapsed_s"] for p in payloads):
+        raise ConfigError(f"final {kind} trajectory is earlier than an interval record")
+    return "verified"
 
 
 def run_validation(run_dirs, repo_root, *, batches=100, device="cuda:0", output_dir=None, validation_cache_path=None):
@@ -161,7 +195,9 @@ def run_validation(run_dirs, repo_root, *, batches=100, device="cuda:0", output_
             # Check all exports before any expensive evaluation kernel work.
             payload = torch.load(run["checkpoint"], map_location="cpu", weights_only=True)
             load_global_parameters(model, payload, num_fragments=fragment_count(run),
-                                   expected_revisions=run["summary"]["fragment_revisions"], expected_method=run["config"].method)
+                                   expected_revisions=run["summary"]["fragment_revisions"], expected_method=run["config"].method,
+                                   expected_syncer_step=(run["config"].decoupled.syncer_steps
+                                       if run["config"].method in DECOUPLED_METHODS and run["config"].decoupled.stopping == "syncer_steps" else None))
         # Restore the initial reference after the prevalidation loop.
         with torch.no_grad():
             for name, parameter in model.named_parameters():
@@ -181,7 +217,9 @@ def run_validation(run_dirs, repo_root, *, batches=100, device="cuda:0", output_
         for run in runs:
             payload = torch.load(run["checkpoint"], map_location="cpu", weights_only=True)
             load_global_parameters(model, payload, num_fragments=fragment_count(run),
-                                   expected_revisions=run["summary"]["fragment_revisions"], expected_method=run["config"].method)
+                                   expected_revisions=run["summary"]["fragment_revisions"], expected_method=run["config"].method,
+                                   expected_syncer_step=(run["config"].decoupled.syncer_steps
+                                       if run["config"].method in DECOUPLED_METHODS and run["config"].decoupled.stopping == "syncer_steps" else None))
             label = run["folder"].name
             report["models"].append({"label": label, "kind": "global", "method": run["config"].method,
                                     "run_dir": str(run["folder"]), "checkpoint": str(run["checkpoint"]),
@@ -194,6 +232,33 @@ def run_validation(run_dirs, repo_root, *, batches=100, device="cuda:0", output_
                                     "sync_updates": run["summary"].get("sync_updates"),
                                     "fragment_revisions": list(payload["fragment_revisions"]),
                                     "unmerged_work": residual_work(run["summary"]), **measure(label)})
+        # Evaluate immutable training-time exports with exactly the same frozen
+        # validation batches as the initial/final comparison.
+        trajectory_rows = []
+        initial_metrics = {k:report["models"][0][k] for k in ("loss", "perplexity", "next_token_accuracy")}
+        for run in runs:
+            sources = [("global", "global", run["folder"])]
+            sources += [("learner", child.name, child) for child in sorted(run["folder"].glob("learner_*")) if child.is_dir()]
+            for kind, learner_id, source in sources:
+                payloads = [torch.load(checkpoint, map_location="cpu", weights_only=True)
+                            for checkpoint in sorted((source / "trajectory").glob("*.pt"))]
+                endpoint_status = validate_final_trajectory(run, kind, learner_id, payloads) if payloads else "missing"
+                payloads.sort(key=lambda p: (p["processed_tokens"], p["elapsed_s"], p["step"]))
+                for payload in payloads:
+                    from .evaluation import evaluate_trajectory_snapshot
+                    metrics = evaluate_trajectory_snapshot(model, payload, frozen, device=device,
+                        vocab_size=vocab_size, initial_sha=initial_sha, initial_metrics=initial_metrics)
+                    trajectory_rows.append({"method":run["config"].method, "kind":kind,
+                        "learner":learner_id, "step":payload["step"],
+                        "processed_tokens":payload["processed_tokens"], "elapsed_s":payload["elapsed_s"],
+                        "snapshot_event":payload.get("snapshot_event", "legacy"), "endpoint_status":endpoint_status,
+                        "syncer_step":payload.get("syncer_step"),
+                        **{k:metrics[k] for k in ("loss", "perplexity", "next_token_accuracy")}})
+        if trajectory_rows:
+            with (output / "trajectory.csv").open("w", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(trajectory_rows[0]))
+                writer.writeheader(); writer.writerows(trajectory_rows)
+        report["trajectory_points"] = len(trajectory_rows)
         report["status"] = "passed"
         with (output / "evaluation.csv").open("w", newline="") as stream:
             fields = ("label", "kind", "loss", "perplexity", "next_token_accuracy", "valid_tokens", "batches", "checkpoint")

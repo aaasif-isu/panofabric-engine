@@ -41,7 +41,7 @@ def _finite_number(value: Any, name: str, *, minimum: float = 0.0) -> None:
 
 @dataclass(frozen=True)
 class HeLoCoConfig:
-    """Correction applied to one merged quorum gradient, not each arrival."""
+    """Quorum correction order; neither mode performs an outer step per arrival."""
 
     rho: float = 1.0
     correction_enabled: bool = True
@@ -52,6 +52,7 @@ class HeLoCoConfig:
     kappa: float = 3.0
     beta_max: float = 0.5
     eps: float = 1e-8
+    correction_order: str = "merge_then_correct"
 
     def validate(self) -> None:
         for name in ("rho", "c_ok", "k_s", "k_d", "kappa", "beta_max", "eps"):
@@ -63,6 +64,8 @@ class HeLoCoConfig:
         for name in ("correction_enabled", "lookahead"):
             if type(getattr(self, name)) is not bool:
                 raise ConfigError(f"decoupled.heloco.{name} must be true or false")
+        if self.correction_order not in {"merge_then_correct", "correct_then_merge"}:
+            raise ConfigError("decoupled.heloco.correction_order must be merge_then_correct or correct_then_merge")
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> HeLoCoConfig:
@@ -79,13 +82,31 @@ class DecoupledConfig:
     """Settings reserved for the new fragment lifecycle, independent of H."""
 
     num_fragments: int = 4
+    max_inflight_captures: int = 1
+    syncer_shards: int = 1
+    syncer_timeout: float = 60.0
     min_quorum: int = 2
     overlap_steps: int = 5
     sync_interval: float = 1.0
     grace_window_factor: float = 0.8
+    stopping: str = "local_steps"
+    syncer_steps: int | None = None
+    clock_lr_schedule: str = "constant"
     scheduler: str = "round_robin"
+    sync_period: int | None = None
+    fragment_offsets: list[int] | None = None
+    min_local_steps: int | None = None
     merge: str = "weighted_average"
+    weighting: str = "tokens_squared_per_step"
+    adaptive_grace: bool = True
+    timing_ema_alpha: float = 0.2
     heloco: HeLoCoConfig = field(default_factory=HeLoCoConfig)
+
+    @property
+    def capture_min_steps(self):
+        if self.min_local_steps is not None:
+            return self.min_local_steps
+        return 1 if self.scheduler == "paper_offsets" else self.overlap_steps
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> DecoupledConfig:
@@ -95,18 +116,50 @@ class DecoupledConfig:
         values = dict(values)
         heloco = HeLoCoConfig.from_mapping(_mapping(values.pop("heloco", {}), "decoupled.heloco"))
         result = cls(**values, heloco=heloco)
-        for name in ("num_fragments", "min_quorum", "overlap_steps"):
+        for name in ("num_fragments", "min_quorum", "overlap_steps", "max_inflight_captures", "syncer_shards"):
             _positive_int(getattr(result, name), f"decoupled.{name}")
+        if result.max_inflight_captures > result.num_fragments:
+            raise ConfigError("decoupled.max_inflight_captures cannot exceed num_fragments")
+        _finite_number(result.syncer_timeout, "decoupled.syncer_timeout")
+        if result.syncer_timeout == 0:
+            raise ConfigError("decoupled.syncer_timeout must be > 0")
         _finite_number(result.sync_interval, "decoupled.sync_interval")
         if result.sync_interval == 0:
             raise ConfigError("decoupled.sync_interval must be > 0")
         _finite_number(result.grace_window_factor, "decoupled.grace_window_factor")
         if result.grace_window_factor > 1:
             raise ConfigError("decoupled.grace_window_factor must be in [0, 1]")
-        if result.scheduler != "round_robin":
-            raise ConfigError("only decoupled.scheduler: round_robin is planned for v1")
-        if result.merge != "weighted_average":
-            raise ConfigError("only decoupled.merge: weighted_average is planned for v1")
+        if result.clock_lr_schedule not in {"constant", "local_horizon"}:
+            raise ConfigError("decoupled.clock_lr_schedule must be constant or local_horizon")
+        if result.stopping not in {"local_steps", "syncer_steps"}:
+            raise ConfigError("decoupled.stopping must be local_steps or syncer_steps")
+        if result.stopping == "syncer_steps":
+            _positive_int(result.syncer_steps, "decoupled.syncer_steps")
+            if result.scheduler != "paper_offsets":
+                raise ConfigError("syncer_steps stopping requires paper_offsets scheduling")
+        elif result.syncer_steps is not None:
+            raise ConfigError("decoupled.syncer_steps requires stopping: syncer_steps")
+        if result.scheduler not in ("round_robin", "paper_offsets"):
+            raise ConfigError("decoupled.scheduler must be round_robin or paper_offsets")
+        if result.min_local_steps is not None:
+            _positive_int(result.min_local_steps, "decoupled.min_local_steps")
+        if result.scheduler == "paper_offsets":
+            from .schedule_spec import resolve_paper_schedule
+            try:
+                resolve_paper_schedule(result.num_fragments, result.sync_period, result.fragment_offsets)
+            except ValueError as exc:
+                raise ConfigError(f"decoupled: {exc}") from exc
+        elif result.sync_period is not None or result.fragment_offsets is not None:
+            raise ConfigError("sync_period/fragment_offsets apply only to paper_offsets")
+        if result.merge not in {"weighted_average", "rda", "paper_rda"}:
+            raise ConfigError("decoupled.merge must be weighted_average, rda or paper_rda")
+        if result.weighting not in {"tokens", "tokens_squared_per_step"}:
+            raise ConfigError("decoupled.weighting must be tokens or tokens_squared_per_step")
+        if type(result.adaptive_grace) is not bool:
+            raise ConfigError("decoupled.adaptive_grace must be true or false")
+        _finite_number(result.timing_ema_alpha, "decoupled.timing_ema_alpha")
+        if not 0 < result.timing_ema_alpha <= 1:
+            raise ConfigError("decoupled.timing_ema_alpha must be in (0, 1]")
         return result
 
 
@@ -115,6 +168,7 @@ class ExperimentConfig:
     method: str
     run: dict[str, Any] = field(default_factory=dict)
     decoupled: DecoupledConfig = field(default_factory=DecoupledConfig)
+    monitoring: dict[str, Any] = field(default_factory=dict)
 
     @property
     def fragment_outer_method(self) -> str:
@@ -181,7 +235,7 @@ class ExperimentConfig:
             if args.rho is not None:
                 raise ConfigError("run.rho is a legacy arrival weight; use decoupled.heloco.rho for a merged quorum")
             if args.correction_workers != "all" or args.correction_scope != "tensorwise":
-                raise ConfigError("decoupled correction is tensorwise after merging; use decoupled.heloco.correction_enabled to disable it")
+                raise ConfigError("decoupled correction is tensorwise; select decoupled.heloco.correction_order or correction_enabled")
         else:
             if args.sync_steps % args.num_fragments:
                 raise ConfigError("run.sync_steps must be divisible by run.num_fragments for legacy methods")
@@ -196,7 +250,7 @@ def load_config(path: Path, method_override: str | None = None) -> ExperimentCon
 
     with path.open(encoding="utf-8") as stream:
         data = _mapping(yaml.safe_load(stream), "configuration")
-    unknown = data.keys() - {"method", "run", "decoupled"}
+    unknown = data.keys() - {"method", "run", "decoupled", "monitoring"}
     if unknown:
         raise ConfigError(f"configuration: unknown section(s) {sorted(unknown)}")
     method = method_override if method_override is not None else data.get("method")
@@ -210,4 +264,14 @@ def load_config(path: Path, method_override: str | None = None) -> ExperimentCon
     if reserved:
         raise ConfigError(f"run: reserved option(s) {sorted(reserved)}; select the method at the top level")
     decoupled = DecoupledConfig.from_mapping(_mapping(data.get("decoupled", {}), "decoupled"))
-    return ExperimentConfig(method=method, run=run, decoupled=decoupled)
+    monitoring = dict(_mapping(data.get("monitoring", {}), "monitoring"))
+    if monitoring.keys() - {"enabled", "global_every_updates", "learner_every_steps", "memory_sample_seconds"}:
+        raise ConfigError("unknown monitoring option")
+    if type(monitoring.get("enabled", False)) is not bool:
+        raise ConfigError("monitoring.enabled must be boolean")
+    for name in ("global_every_updates", "learner_every_steps"):
+        _positive_int(monitoring.get(name, 10), "monitoring." + name)
+    _finite_number(monitoring.get("memory_sample_seconds", 0.1), "monitoring.memory_sample_seconds")
+    if monitoring.get("memory_sample_seconds", 0.1) <= 0:
+        raise ConfigError("monitoring.memory_sample_seconds must be positive")
+    return ExperimentConfig(method=method, run=run, decoupled=decoupled, monitoring=monitoring)

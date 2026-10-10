@@ -17,6 +17,11 @@ import subprocess
 import sys
 import tempfile
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from panoengine.decentralized.decoupled_heloco.config import (
     ConfigError,
     DECOUPLED_METHODS,
@@ -24,10 +29,6 @@ from panoengine.decentralized.decoupled_heloco.config import (
     METHODS,
     load_config,
 )
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
-
 
 def _load_legacy_launcher():
     """Read its parser only; importing does not run main or start any roles."""

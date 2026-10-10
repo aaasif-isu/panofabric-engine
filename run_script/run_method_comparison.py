@@ -41,7 +41,7 @@ def load_comparison(path):
     path = Path(path)
     content = path.read_text(encoding="utf-8")
     data = yaml.safe_load(content)
-    if not isinstance(data, dict) or data.keys() - {"method_run", "run", "decoupled", "evaluation"}:
+    if not isinstance(data, dict) or data.keys() - {"method_run", "run", "decoupled", "evaluation", "monitoring"}:
         raise ConfigError("comparison YAML accepts method_run, run, decoupled, and evaluation sections")
     methods = data.get("method_run")
     if not isinstance(methods, list) or not methods or any(not isinstance(m, str) or m not in METHODS for m in methods):
@@ -68,7 +68,7 @@ def load_comparison(path):
         effective = Path(directory) / "effective.yaml"
         parsed = Path(directory) / "legacy.yaml"
         for method in methods:
-            effective.write_text(yaml.safe_dump({"method": method, "run": data.get("run", {}), "decoupled": data.get("decoupled", {})}))
+            effective.write_text(yaml.safe_dump({"method": method, "run": data.get("run", {}), "decoupled": data.get("decoupled", {}), "monitoring": data.get("monitoring", {})}))
             config = load_config(effective)
             parsed.write_text(yaml.safe_dump(config.legacy_options()))
             resolved = _parse_legacy_options(legacy, parsed)
@@ -78,12 +78,15 @@ def load_comparison(path):
                 raise ConfigError("comparison uses a fixed shared run.steps budget; set tokens_per_parameter: null")
             if method in DECOUPLED_METHODS:
                 validate_training_options(config, resolved)
-                if resolved.steps < config.decoupled.overlap_steps:
-                    raise ConfigError("run.steps must be at least decoupled.overlap_steps")
+                if config.decoupled.stopping == "local_steps" and resolved.steps < config.decoupled.capture_min_steps:
+                    raise ConfigError("run.steps must be at least decoupled.min_local_steps")
             else:
                 validate_baseline_options(config, resolved)
             configs.append(config)
             options.append(resolved)
+    clock_mode = any(config.decoupled.stopping == "syncer_steps" for config in configs)
+    if clock_mode and any(method not in DECOUPLED_METHODS for method in methods):
+        raise ConfigError("syncer_steps stopping supports decoupled-only comparisons; use local_steps for a matched five-method token budget")
     return {"methods": methods, "configs": configs, "options": options,
             "evaluation": evaluation, "source": content,
             "source_sha256": hashlib.sha256(content.encode()).hexdigest()}
@@ -174,12 +177,23 @@ def completed_run(folder, config, options):
     summary = json.loads((folder / "summary.json").read_text())
     if summary.get("status") != "passed" or summary.get("method") != config.method:
         raise RuntimeError(f"{config.method} did not produce a matching passed summary")
+    if summary.get("degraded", False):
+        raise RuntimeError(f"{config.method} lost learners; a degraded run cannot enter a matched-budget comparison")
     if not (folder / "global_model.pt").is_file():
         raise RuntimeError(f"{config.method} did not export global_model.pt")
     learners = summary.get("learners", [])
-    if (summary.get("steps_per_learner") != options.steps or len(learners) != options.islands
+    clock_mode = config.method in DECOUPLED_METHODS and config.decoupled.stopping == "syncer_steps"
+    if (len(learners) != options.islands
             or [r.get("learner_id") for r in learners] != list(range(options.islands))
-            or any(r.get("total_local_steps") != options.steps or type(r.get("total_tokens")) is not int or r["total_tokens"] < 1 for r in learners)):
+            or any(type(r.get("total_tokens")) is not int or r["total_tokens"] < 0 for r in learners)):
+        raise RuntimeError(f"{config.method} has invalid completed learner records")
+    if clock_mode:
+        target = config.decoupled.syncer_steps
+        if (summary.get("stopping_mode") != "syncer_steps" or summary.get("syncer_step_target") != target
+                or summary.get("syncer_step") != target or any(r.get("syncer_step") != target for r in learners)):
+            raise RuntimeError(f"{config.method} did not complete the shared syncer-clock budget")
+    elif (summary.get("steps_per_learner") != options.steps
+            or any(r.get("total_local_steps") != options.steps or r["total_tokens"] < 1 for r in learners)):
         raise RuntimeError(f"{config.method} did not complete the shared local training budget")
     initial = summary.get("initial_parameters_sha256")
     if not isinstance(initial, str) or re.fullmatch(r"[0-9a-f]{64}", initial) is None:
@@ -213,173 +227,106 @@ def comparison_rows(report, manifest):
     return rows
 
 def generate_convergence_plot(folder, runs):
+    """Global and learner VALIDATION loss; no local-loss/global-loss substitution."""
     try:
         import matplotlib.pyplot as plt
-        import csv
     except ImportError:
-        print("Skipping convergence plot: matplotlib is not installed. Run 'pip install matplotlib' in your environment to enable it.", flush=True)
+        print("Skipping plots: matplotlib unavailable", flush=True)
         return
+    path = folder / "evaluation" / "trajectory.csv"
+    if not path.exists():
+        print("No validation trajectory recorded; enable monitoring and evaluation for the next run.", flush=True)
+        return
+    with path.open() as stream:
+        rows = list(csv.DictReader(stream))
+    for axis, filename, xlabel in (("processed_tokens", "convergence_plot.png", "Total processed training tokens (asynchronously observed)"),
+                                   ("elapsed_s", "global_loss_vs_time.png", "Training elapsed time (s; includes snapshot overhead)")):
+        fig, ax = plt.subplots(figsize=(10,6))
+        for method in runs:
+            points = [r for r in rows if r["method"] == method and r["kind"] == "global"]
+            points.sort(key=lambda r:(int(r["processed_tokens"]), float(r["elapsed_s"]), int(r["step"])))
+            if points:
+                ax.plot([float(r[axis]) for r in points], [float(r["loss"]) for r in points], marker=".", label=method)
+        ax.set(xlabel=xlabel, ylabel="Global held-out loss", title="Global model convergence (shared validation batches)")
+        ax.grid(alpha=.3); ax.legend(); fig.tight_layout();fig.savefig(folder/filename,dpi=150);plt.close(fig)
+    methods = [m for m in runs if any(r["method"]==m and r["kind"]=="learner" for r in rows)]
+    if methods:
+        fig, axes = plt.subplots(len(methods),1,figsize=(10,4*len(methods)),squeeze=False)
+        for method, ax in zip(methods,axes[:,0]):
+            ids = sorted({r["learner"] for r in rows if r["method"]==method and r["kind"]=="learner"})
+            for learner in ids:
+                points = [r for r in rows if r["method"]==method and r["kind"]=="learner" and r["learner"]==learner]
+                points.sort(key=lambda r:(int(r["processed_tokens"]), float(r["elapsed_s"]), int(r["step"])))
+                ax.plot([int(r["processed_tokens"]) for r in points],[float(r["loss"]) for r in points],marker=".",label=learner)
+            ax.set(title=method,xlabel="Learner processed training tokens",ylabel="Held-out loss")
+            ax.grid(alpha=.3);ax.legend()
+        fig.tight_layout();fig.savefig(folder/"learner_convergence.png",dpi=150);plt.close(fig)
 
-    plt.figure(figsize=(10, 6))
-    plotted = False
-
-    for method, run_data in runs.items():
-        if run_data.get("status") != "passed":
-            continue
-        
-        run_dir = Path(run_data["folder"])
-        csv_path = run_dir / "learner_0" / "steps.csv"
-        
-        if csv_path.exists():
-            steps, losses = [], []
-            with open(csv_path) as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    steps.append(int(row['step']))
-                    losses.append(float(row['loss']))
-            if steps:
-                plt.plot(steps, losses, label=method, linewidth=2)
-                plotted = True
-        else:
-            print(f"Warning: Data not found for {method} at {csv_path}", flush=True)
-
-    if plotted:
-        plt.xlabel("Local Training Step (Round)", fontsize=12)
-        plt.ylabel("Training Loss (Convergence)", fontsize=12)
-        plt.title("Convergence Comparison of Distributed Training Methods", fontsize=14, fontweight="bold")
-        plt.legend(fontsize=10)
-        plt.grid(True, alpha=0.3)
-        out_file = folder / "convergence_plot.png"
-        plt.savefig(out_file, dpi=150, bbox_inches="tight")
-        print(f"Convergence plot saved to: {out_file}", flush=True)
-    else:
-        print("No valid steps.csv found to generate convergence plot.", flush=True)
-    plt.close()
 
 def generate_memory_plot(folder, runs):
-    try:
-        import torch
-        import glob
-        import json
-        import csv
-    except ImportError as e:
-        print(f"Skipping memory footprint: required packages not installed: {e}", flush=True)
-        return
-
-    param_count = None
-    for method, run_data in runs.items():
-        if run_data.get("status") == "passed":
-            model_path = Path(run_data["folder"]) / "global_model.pt"
-            if model_path.exists():
-                try:
-                    checkpoint = torch.load(model_path, map_location="cpu")
-                    parameters = checkpoint.get("parameters", {})
-                    param_count = sum(p.numel() for p in parameters.values())
-                    break
-                except Exception:
-                    pass
-    
-    if not param_count:
-        print("No valid global_model.pt found to calculate memory footprint.", flush=True)
-        return
-
-    bytes_per_param = 4
-    base_model_size_mb = (param_count * bytes_per_param) / (1024 ** 2)
-    
-    # The CPU-based Server or Coordinator process maintains the FP32 model and outer FP32 momentum,
-    # plus staging buffers for aggregation or dispatch. Hence, theoretical CPU memory is ~3x model size.
-    ps_multiplier = 3
-    estimated_cpu_memory_mb = base_model_size_mb * ps_multiplier
-
-    methods = []
-    gpu_memory = {}
-    csv_rows = []
-
-    for method, run_data in runs.items():
-        if run_data.get("status") != "passed":
+    """Measured coordinator and replica RSS/processing, including shard costs."""
+    rows = []
+    for method, run in runs.items():
+        if run.get("status") != "passed":
             continue
-            
-        methods.append(method)
-        m_max = 0
-        run_dir = Path(run_data["folder"])
-        log_files = glob.glob(str(run_dir / "**/*.log"), recursive=True)
-        for f in log_files:
-            try:
-                for l in open(f):
-                    if "PFMETRICS" in l:
-                        data = json.loads(l.split("PFMETRICS ")[1])
-                        m_max = max(m_max, data.get("memory/max_reserved(GiB)", 0))
-            except Exception:
-                pass
-                
-        gpu_memory_mb = m_max * 1024  # Convert GiB to MB
-        gpu_memory[method] = gpu_memory_mb
-        
-        csv_rows.append({
-            "Method": method,
-            "Central_CPU_Memory_MB": round(estimated_cpu_memory_mb, 2),
-            "CPU_Memory_Type": "Theoretical Estimate (~3x model size)",
-            "Peak_Learner_GPU_Memory_MB": round(gpu_memory_mb, 2),
-            "GPU_Memory_Type": "Empirical Measurement (max_reserved from logs)",
-            "GPU_Source_Logs": len(log_files)
-        })
-
-    if not methods:
+        root = Path(run["folder"])
+        memory, processing = root/"central_memory.csv", root/"central_processing.csv"
+        if not memory.exists() or not processing.exists():
+            print(f"No measured central resources for {method}; no estimate substituted", flush=True)
+            continue
+        with memory.open() as stream:
+            samples = list(csv.DictReader(stream))
+        with processing.open() as stream:
+            updates = list(csv.DictReader(stream))
+        if not samples:
+            continue
+        metadata = json.loads((root/"monitoring.json").read_text())
+        aggregate_peak = max(int(r["rss_bytes"]) for r in samples)/1024**2
+        replica_cpu = 0.0
+        replica_memory = root / "syncer_memory.csv"
+        aggregate = []
+        if replica_memory.exists():
+            with replica_memory.open() as stream:
+                aggregate = [r for r in csv.DictReader(stream) if r["role"] == "aggregate"]
+            if aggregate:
+                aggregate_peak = max(int(r["rss_bytes"]) for r in aggregate)/1024**2
+        if run["summary"].get("syncer_shards", 1) > 1 and not aggregate:
+            print(f"No measured aggregate syncer resources for {method}; skipping resource comparison", flush=True)
+            continue
+        replica_processing = root / "syncer_replica_processing.csv"
+        if replica_processing.exists():
+            with replica_processing.open() as stream:
+                replica_cpu = sum(float(r["process_cpu_s"]) for r in csv.DictReader(stream))
+        rows.append({"method":method,"peak_syncer_total_rss_mib":aggregate_peak,
+                     "replica_processing_cpu_s":replica_cpu,
+                     "total_processing_cpu_s":replica_cpu + sum(float(r["thread_cpu_s"]) for r in updates),"peak_central_rss_mib":max(int(r["rss_bytes"]) for r in samples)/1024**2,
+                     "processing_wall_s":sum(float(r["wall_s"]) for r in updates),
+                     "processing_thread_cpu_s":sum(float(r["thread_cpu_s"]) for r in updates),
+                     "processed_tokens":sum(learner["total_tokens"] for learner in run["summary"]["learners"]),
+                     "measured_updates":sum(r["phase"] in ("outer_apply","merge_correction_outer_update") for r in updates),"snapshot_overhead_s":metadata["snapshot_overhead_s"],
+                     "training_elapsed_s":run["summary"]["elapsed_s"],
+                     "uploaded_protocol_bytes":run["summary"].get("wire_received_bytes",run["summary"].get("protocol_received_bytes")),
+                     "downloaded_protocol_bytes":run["summary"].get("wire_sent_bytes",run["summary"].get("protocol_sent_bytes"))})
+    if not rows:
         return
-
-    # Write CSV
-    csv_path = folder / "memory_footprint.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["Method", "Central_CPU_Memory_MB", "CPU_Memory_Type", "Peak_Learner_GPU_Memory_MB", "GPU_Memory_Type", "GPU_Source_Logs"])
-        writer.writeheader()
-        writer.writerows(csv_rows)
-    print(f"Memory numerical results saved to: {csv_path}", flush=True)
-
-    # Plot
+    with (folder/"memory_footprint.csv").open("w",newline="") as stream:
+        writer=csv.DictWriter(stream,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
     try:
         import matplotlib.pyplot as plt
-        import numpy as np
-    except ImportError as e:
-        print(f"Skipping memory plot visualization: matplotlib not installed: {e}", flush=True)
+    except ImportError:
         return
-
-    x = np.arange(len(methods))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    cpu_vals = [estimated_cpu_memory_mb for _ in methods]
-    gpu_vals = [gpu_memory[m] for m in methods]
-    
-    rects1 = ax.bar(x - width/2, cpu_vals, width, label='Estimated Central Syncer (CPU)', color='salmon')
-    rects2 = ax.bar(x + width/2, gpu_vals, width, label='Measured Peak Learner (GPU)', color='skyblue')
-    
-    ax.set_ylabel('Memory (MB)', fontsize=12)
-    model_m = param_count / 1e6
-    ax.set_title(f"Memory Footprint by Method ({model_m:.1f}M Params)", fontsize=14, fontweight='bold')
-    ax.set_xticks(x)
-    ax.set_xticklabels(methods)
-    ax.legend(fontsize=10)
-    ax.grid(axis='y', alpha=0.3)
-    
-    for bar in rects1:
-        yval = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, yval + 2, f"{yval:.1f}", ha='center', va='bottom', fontweight='bold', fontsize=9)
-    for bar in rects2:
-        yval = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, yval + 2, f"{yval:.1f}", ha='center', va='bottom', fontweight='bold', fontsize=9)
-
-    plt.figtext(0.5, 0.01, 
-             "Note: CPU memory is a theoretical estimate (~3x model size) as all methods currently use an in-process syncer.\n"
-             "GPU memory is empirically measured via max_reserved(GiB) in PyTorch across all learner nodes.", 
-             ha='center', fontsize=10, bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
-
-    plt.subplots_adjust(bottom=0.15)
-    out_file = folder / "parameter_server_memory.png"
-    plt.savefig(out_file, dpi=150, bbox_inches="tight")
-    print(f"Memory plot saved to: {out_file}", flush=True)
-    plt.close()
-
+    fig, axes = plt.subplots(1,3,figsize=(16,5))
+    for ax, field, title, unit in zip(axes,
+        ("peak_syncer_total_rss_mib","processing_wall_s","total_processing_cpu_s"),
+        ("Peak server / syncer aggregate RSS", "Cumulative outer processing wall time", "Coordinator thread + replica outer CPU time"),
+        ("MiB","Seconds","Seconds")):
+        ax.bar([r["method"] for r in rows],[r[field] for r in rows]);ax.set(title=title,ylabel=unit)
+        ax.tick_params(axis="x",labelrotation=35);ax.grid(axis="y",alpha=.3)
+    budgets = {r["processed_tokens"] for r in rows}
+    budget_label = (f"matched observed tokens: {next(iter(budgets)):,}" if len(budgets) == 1
+                    else "UNEQUAL TOKEN TOTALS; resource bars are not a matched-budget comparison")
+    fig.suptitle("Measured server / syncer resources\n" + budget_label + "\nIncludes coordinator + CPU replicas and monitoring; excludes learners")
+    fig.tight_layout();fig.savefig(folder/"parameter_server_memory.png",dpi=150);plt.close(fig)
 
 
 def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir=None, command_runner=run_command):

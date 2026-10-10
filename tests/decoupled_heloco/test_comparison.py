@@ -32,9 +32,9 @@ class ComparisonConfigTests(unittest.TestCase):
         code = "import sys; import run_method_comparison as c; status=c.main(['--check-config']); assert 'torch' not in sys.modules and 'torchft' not in sys.modules; raise SystemExit(status)"
         result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        loaded = comparison.load_comparison(ROOT / "method_comparison.yaml")
+        loaded = comparison.load_comparison(ROOT / "run_script" / "method_comparison.yaml")
         self.assertEqual(loaded["methods"], ["decoupled_heloco", "decoupled_diloco", "heloco", "diloco", "mla"])
-        self.assertEqual([r.steps for r in loaded["options"]], [500] * 5)
+        self.assertEqual([r.steps for r in loaded["options"]], [40] * 5)
         self.assertEqual([r.outer_lr for r in loaded["options"]], [0.7] * 5)
         with patch.object(comparison.subprocess, "Popen") as launch, redirect_stdout(io.StringIO()):
             self.assertEqual(comparison.main(["--dry-run"]), 0)
@@ -46,7 +46,7 @@ class ComparisonConfigTests(unittest.TestCase):
                         {"evaluation": {"timeout": -1}}, {"evaluation": {"enabled": "yes"}},
                         {"evaluation": {"validation_cache": []}}, {"extra_section": True}):
             with self.subTest(changes=changes), tempfile.TemporaryDirectory() as directory:
-                data = yaml.safe_load((ROOT / "method_comparison.yaml").read_text())
+                data = yaml.safe_load((ROOT / "run_script" / "method_comparison.yaml").read_text())
                 data.update(changes)
                 path = Path(directory) / "invalid.yaml"
                 path.write_text(yaml.safe_dump(data))
@@ -55,7 +55,7 @@ class ComparisonConfigTests(unittest.TestCase):
 
     def test_later_baseline_invalid_budget_is_rejected_before_training_any_method(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = yaml.safe_load((ROOT / "method_comparison.yaml").read_text())
+            data = yaml.safe_load((ROOT / "run_script" / "method_comparison.yaml").read_text())
             data["run"]["steps"] = 11  # Decoupled budgets valid; baseline H=10 invalid.
             path = Path(directory) / "invalid.yaml"
             path.write_text(yaml.safe_dump(data))
@@ -66,7 +66,7 @@ class ComparisonConfigTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_explicit_run_directory_routes_and_refuses_to_overwrite_for_both_coordinators(self):
-        loaded = comparison.load_comparison(ROOT / "method_comparison.yaml")
+        loaded = comparison.load_comparison(ROOT / "run_script" / "method_comparison.yaml")
         for index, function, module, preflight, coordinator in (
             (0, run_gpu_training, "gpu_training", "preflight", "_run_training"),
             (2, run_baseline_training, "baseline_training", "preflight_baseline", "_run_baseline"),
@@ -95,7 +95,7 @@ class ComparisonSupervisionTests(unittest.TestCase):
                 comparison.run_command([sys.executable, "-c", "import time; time.sleep(30)"], log, ROOT, 0.2)
 
     def test_failed_method_preserves_manifest_and_never_runs_later_methods_or_evaluation(self):
-        loaded = comparison.load_comparison(ROOT / "method_comparison.yaml")
+        loaded = comparison.load_comparison(ROOT / "run_script" / "method_comparison.yaml")
         calls = []
 
         def failure(command, *_):
@@ -113,7 +113,7 @@ class ComparisonSupervisionTests(unittest.TestCase):
             self.assertFalse((output / "comparison.csv").exists())
 
     def test_missing_requested_validation_cache_fails_before_launch_or_output(self):
-        loaded = comparison.load_comparison(ROOT / "method_comparison.yaml")
+        loaded = comparison.load_comparison(ROOT / "run_script" / "method_comparison.yaml")
         with tempfile.TemporaryDirectory() as directory:
             loaded["evaluation"]["validation_cache"] = str(Path(directory) / "absent.pt")
             output = Path(directory) / "comparison"
@@ -130,7 +130,7 @@ class FullCPUComparisonTests(unittest.TestCase):
             assets = root / "tokenizer"
             assets.mkdir()
             (assets / "tokenizer.json").write_text('{"fixture":"cpu-only"}')
-            data = yaml.safe_load((ROOT / "method_comparison.yaml").read_text())
+            data = yaml.safe_load((ROOT / "run_script" / "method_comparison.yaml").read_text())
             data["run"].update(islands=2, gpus=[0, 1], steps=12, sync_steps=2,
                                seq_len=8, batch=2, hf_assets=str(assets), ps_timeout=30.0,
                                island_slowness_factors=[1, 2])

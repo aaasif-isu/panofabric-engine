@@ -172,7 +172,7 @@ class HeLoCoSyncerTests(unittest.TestCase):
         global_model = _ScalarModel()
         self.models = [copy.deepcopy(global_model) for _ in range(count)]
         self.learners = [DecoupledLearner(model, 1, learner_id=i) for i, model in enumerate(self.models)]
-        self.syncer = DecoupledSyncer(global_model, self.learners, 1, min_quorum=count, overlap_steps=1, outer_lr=1.0)
+        self.syncer = DecoupledSyncer(global_model, self.learners, 1, min_quorum=count, overlap_steps=1, outer_lr=1.0, weighting="tokens")
 
     def train(self, i, delta, tokens=8):
         optimizer = torch.optim.SGD(self.models[i].parameters(), lr=1.0)

@@ -1,8 +1,9 @@
 # Decoupled HeLoCo and DiLoCo — Phases 1–9
 
-This parallel package adds a separate experiment entry point. All existing
-tracked files remain unchanged, including `heloco.py`, `async_diloco.py`,
-`parameter_server.py`, `run_heloco.py`, and `heloco.yaml`.
+This package adds a separate experiment entry point. The conventional outer
+optimizer implementations in `heloco.py`, `async_diloco.py`, and
+`parameter_server.py` are preserved. Launchers and default configurations live
+in `run_script/`; relative data and output paths resolve from the repository root.
 
 Implemented: configuration validation, routing to the original launcher for
 HeLoCo/DiLoCo/MLA, deterministic fragments, dense fragment state, a dense
@@ -16,13 +17,121 @@ The HeLoCo GPU path and held-out evaluator have been exercised on the user's
 server. The new DiLoCo mode still needs its GPU integration run. General
 production/FSDP support remains pending.
 
+## Current audit fixes
+
+The phase sections below retain development history; these settings describe
+current behavior and supersede earlier token-weight and fixed-grace defaults.
+
+- Failed broadcasts no longer gate subsequent outer updates. The syncer retains
+  one latest dispatch per fragment; newer revisions supersede missed older ones.
+  Retries never repeat an outer optimizer step. Snapshots still require a healthy
+  quorum on the current baseline revision.
+- During training, a TCP disconnect or learner exit marks only that endpoint
+  unavailable. Remaining learners continue while at least `min_quorum` endpoints
+  remain available. Final drain, pause and stop check surviving learners.
+  Below quorum the coordinator fails explicitly. Initial startup is still strict:
+  every configured learner must complete the initial handshake.
+- Degraded runs save a global checkpoint and identify failed learners in
+  `summary.json`. The matched-comparison launcher rejects them because the
+  original all-learner token budget was not completed.
+- `RemoteLearner.reconnect(transport, metadata)` and
+  `DecoupledSyncer.reconnect_learner(endpoint)` support explicit reattachment and
+  catch-up to the latest dispatches, including HeLoCo lookahead. The caller must
+  authenticate the connection. The GPU launcher does not automatically restart
+  trainers or accept reattachments; lost inner optimizer/data-loader state and
+  durable distributed checkpoint recovery remain unimplemented.
+
+Both YAML entry points expose the same decoupled settings:
+
+```yaml
+decoupled:
+  weighting: tokens_squared_per_step  # normalized tokens^2 / local_steps
+  merge: paper_rda                    # weighted_average or rda are optional
+  adaptive_grace: true
+  timing_ema_alpha: 0.2
+  heloco:
+    correction_order: merge_then_correct  # optional correct_then_merge
+```
+
+`rda` averages each parameter tensor's radii and unit directions separately.
+`paper_rda` uses arithmetic averaging for recognized token-embedding names
+(`embedding`, `tok_embeddings`, `embed_tokens`) and RDA for other tensors. Check
+these names when adapting to a different model. A numerically canceled mean
+unit direction produces zero rather than a noise-amplified update. The supplied YAML uses paper_rda; choose weighted_average to reproduce the
+previous arithmetic-averaging runs.
+
+In `merge_then_correct`, one merged gradient is corrected against the old
+momentum. In `correct_then_merge`, each contribution is corrected against that
+same old momentum, then merged. Both modes advance outer momentum exactly once
+per quorum update and apply `rho` exactly once. The nonlinear modes can differ;
+neither is claimed to improve convergence without experiments. Disabling
+correction/lookahead still leaves HeLoCo's EMA momentum convention, so use
+HeLoCo ablations to isolate correction effects from the DiLoCo sum buffer.
+
+Adaptive grace uses `factor * max(0, tau * step_time - quorum_time - sync_time)`.
+Step durations are estimated from wall time and monotonic lifetime step reports
+per learner, including deliberate pacing; the kth-fastest observed pace estimates
+quorum compute time. Capture-quorum latency and outer-update-to-queue-ACK latency
+are tracked with EMAs. No measured compute pace means zero added grace. The
+current capture latency is also used to prevent its EMA understating the cost.
+This is an estimate of available slack, not a guarantee under sudden network or
+compute slowdowns. `adaptive_grace: false` restores the fixed grace policy.
+
+The YAML selects the actual scheduler used by all decoupled entry points:
+
+```yaml
+decoupled:
+  scheduler: paper_offsets  # or round_robin
+  sync_period: null        # H; defaults to P=num_fragments
+  fragment_offsets: null  # t_p in fragment order; defaults to floor(p*H/P)
+  overlap_steps: 2         # tau: communication/slack budget
+  min_local_steps: null    # paper_offsets defaults to 1; round_robin to tau
+```
+
+`paper_offsets` selects a fragment when `t mod H = t_p`, starting at t=1.
+Offsets must be distinct integers in [0,H), and H must be at least P. For
+P=2, H=6 and offsets [0,2], updates target fragment 1 at t=2, fragment 0 at
+ t=6, fragment 1 at t=8, and fragment 0 at t=12. `global_step` records this
+schedule slot; `sync_step` separately counts committed updates. Missing quorum
+and failed captures retry the same slot. Slots are paced using observed quorum
+compute time; sync_interval supplies the bootstrap estimate. Attempts are paced
+from their start rather than adding a new interval after every commit.
+
+`round_robin` preserves the previous committed-update order and interval pacing.
+Set sync_period and fragment_offsets to null in that mode; incompatible settings
+and unknown scheduler names fail validation rather than being silently ignored.
+Neither mode artificially delays received updates by tau local steps: learners
+apply them at training boundaries.
+
+This implements the paper's offset selection, not its entire concurrent runtime.
+There is still one active fragment capture, an estimated wall-clock schedule,
+contiguous fragmentation, and fixed learner budgets rather than a shared global
+T stopping rule. Concurrent overlapping fragment captures and a broadcast global
+training clock remain necessary for full Algorithm 1/2 fidelity. Decoupled HeLoCo
+is an extension of the paper's DiLoCo outer optimizer. No fragment revisions are
+skipped on capture timeout or quorum loss.
+
+For the first GPU check, run one method before running the five-method comparison:
+
+```bash
+python run_script/run_decoupled_heloco.py --check-config
+python run_script/run_decoupled_heloco.py --check-training
+python run_script/run_decoupled_heloco.py --method decoupled_diloco
+python run_script/run_method_comparison.py --check-config
+```
+
+These checks need the existing project environment and GPU allocation for actual
+training. CPU tests cover hard learner crashes over real TCP, multiple missed
+fragment cycles and catch-up, weighting, RDA, correction ordering, and timing.
+They do not establish CUDA compatibility, convergence, or a performance gain.
+
 From the repository root, using your project environment:
 
 ```bash
-python run_decoupled_heloco.py --check-config
-python run_decoupled_heloco.py --dry-run
-python run_decoupled_heloco.py --method heloco --dry-run
-python run_decoupled_heloco.py --smoke-test
+python run_script/run_decoupled_heloco.py --check-config
+python run_script/run_decoupled_heloco.py --dry-run
+python run_script/run_decoupled_heloco.py --method heloco --dry-run
+python run_script/run_decoupled_heloco.py --smoke-test
 ```
 
 Validation and routing previews need only Python and PyYAML. They do not query
@@ -34,9 +143,9 @@ budget. Actual baseline training uses the unchanged launcher's normal preflight.
 To run an existing method with these separate settings:
 
 ```bash
-python run_decoupled_heloco.py --method heloco
-python run_decoupled_heloco.py --method diloco
-python run_decoupled_heloco.py --method mla
+python run_script/run_decoupled_heloco.py --method heloco
+python run_script/run_decoupled_heloco.py --method diloco
+python run_script/run_decoupled_heloco.py --method mla
 ```
 
 Use `heloco/bin/python` in those commands if that is your project environment.
@@ -64,7 +173,7 @@ and normalization when comparing those methods.
 Run the focused checks:
 
 ```bash
-python -m unittest discover -s tests/decoupled_heloco -v
+PYTHONPATH=.:run_script:tests/decoupled_heloco python -m unittest discover -s tests/decoupled_heloco -v
 ```
 
 ## Phase 2: fragment layout and state
@@ -162,7 +271,7 @@ outer fragment step, increments that fragment's revision, and queues its new
 weights for every registered learner. Learners apply those queued weights at
 their own boundaries. The scheduler advances only on a committed outer update.
 
-This phase uses simple `FragmentSGD` in `optimizer.py` to isolate control-flow
+Historically, this phase used simple `FragmentSGD` in `optimizer.py` to isolate control-flow
 correctness. It does **not** yet perform HeLoCo directional correction,
 momentum, arrival scaling, or look-ahead dispatch. Merge weights are the
 captured token counts normalized over contributors. This experimental baseline
@@ -184,9 +293,9 @@ handshake, FSDP collectives, quantization, or production trainer integration.
 Run the demo from the repository root in your existing PyTorch environment:
 
 ```bash
-python run_decoupled_heloco.py --smoke-test
+python run_script/run_decoupled_heloco.py --smoke-test
 # For a larger quorum/overlap that needs more simulated work:
-python run_decoupled_heloco.py --smoke-test --smoke-ticks 60
+python run_script/run_decoupled_heloco.py --smoke-test --smoke-ticks 60
 ```
 
 The demo reads the new YAML's island count, fragment/quorum/overlap settings,
@@ -243,9 +352,9 @@ directional correction while retaining `rho` and the momentum update. Use
 
 ```bash
 # Default: tensor correction, outer momentum, and look-ahead
-python run_decoupled_heloco.py --smoke-test
+python run_script/run_decoupled_heloco.py --smoke-test
 # Earlier simple-SGD lifecycle baseline
-python run_decoupled_heloco.py --smoke-test --smoke-outer sgd
+python run_script/run_decoupled_heloco.py --smoke-test --smoke-outer sgd
 ```
 
 The HeLoCo demo also reads the outer momentum and new correction settings.
@@ -259,9 +368,9 @@ Next step: transport and coordinated trainer/FSDP integration.
 Run from the repository root with the project environment active:
 
 ```bash
-python run_decoupled_heloco.py --process-smoke-test
+python run_script/run_decoupled_heloco.py --process-smoke-test
 # To exercise more learners (must be at least decoupled.min_quorum):
-python run_decoupled_heloco.py --process-smoke-test --process-learners 4
+python run_script/run_decoupled_heloco.py --process-smoke-test --process-learners 4
 ```
 
 The launching process is the syncer. Two independently spawned learner processes
@@ -296,7 +405,9 @@ are distinct: final application is verified through subsequent metadata reports.
 - A requested capture quorum must arrive within one interval. Otherwise the
   attempt is released without a global update and can retry after one interval.
 - Once a valid capture quorum arrives, a grace window of
-  `sync_interval * grace_window_factor` lets additional ready learners join.
+  bounded by measured slack lets additional ready learners join. Set
+  `adaptive_grace: false` to use the historical
+  `sync_interval * grace_window_factor` behavior.
   Its expiry merges the valid captured contributors and releases unfinished
   requests. A zero factor commits immediately once a capture quorum arrives.
 
@@ -336,10 +447,10 @@ production readiness.
 From the repository root, after applying the Phase 7 patch:
 
 ```bash
-python -m unittest discover -s tests/decoupled_heloco -v
-python run_decoupled_heloco.py --check-training
+PYTHONPATH=.:run_script:tests/decoupled_heloco python -m unittest discover -s tests/decoupled_heloco -v
+python run_script/run_decoupled_heloco.py --check-training
 # Run this after the preflight passes:
-python run_decoupled_heloco.py --training-timeout 1800
+python run_script/run_decoupled_heloco.py --training-timeout 1800
 ```
 
 `--check-config` and `--dry-run` remain available without querying GPUs.
@@ -463,13 +574,13 @@ Apply Phase 8 after Phases 1–7 and the Phase 7 tokenizer fix, then check:
 ```bash
 git apply --check decoupled-heloco-phase8.patch
 git apply decoupled-heloco-phase8.patch
-python -m unittest discover -s tests/decoupled_heloco -v
+PYTHONPATH=.:run_script:tests/decoupled_heloco python -m unittest discover -s tests/decoupled_heloco -v
 ```
 
 Evaluate the two completed 500-step runs without retraining:
 
 ```bash
-python evaluate_decoupled_heloco.py \
+python run_script/evaluate_decoupled_heloco.py \
   --run-dirs \
     outputs/decoupled_heloco/20261007T043248-c283ae \
     outputs/decoupled_heloco/20261007T045422-aa1740 \
@@ -504,7 +615,7 @@ Each evaluation writes a new directory under
 To reuse that exact held-out set later, supply the cache's printed path:
 
 ```bash
-python evaluate_decoupled_heloco.py \
+python run_script/evaluate_decoupled_heloco.py \
   --run-dirs outputs/decoupled_heloco/20261007T045422-aa1740 \
   --batches 100 --device cuda:0 \
   --validation-cache outputs/decoupled_heloco_evaluation/YOUR_EVALUATION/validation_batches.pt
@@ -566,20 +677,18 @@ asynchronous Delayed-Nesterov implementation.
 
 The reference [Decoupled DiLoCo paper](https://arxiv.org/html/2604.21428v1)
 describes fragment-wise Nesterov outer optimization and a weight proportional
-to `tokens * (tokens / local_steps)`. This pilot retains the existing weight
-proportional to tokens in BOTH decoupled methods. With the same number of
-valid tokens per local step for all contributors, the normalized weights
-coincide. If valid tokens per step vary, this pilot's merge differs from that
-paper weighting; record that distinction in experiments. The existing
-fixed grace factor, single CPU syncer, one-node TCP transport, and fixed local
-budgets define this prototype's scope.
+to `tokens * (tokens / local_steps)`. Both decoupled methods now default to this paper weighting; set
+`weighting: tokens` for the historical policy. With equal valid tokens per
+local step, the normalized weights coincide. Adaptive grace is enabled by
+default. A single CPU syncer, one-node TCP transport, round-robin fragment
+updates, and fixed local budgets still define this prototype's scope.
 
 Apply Phase 9 after Phase 8 and its tokenizer-fixture test fix:
 
 ```bash
 git apply --check decoupled-heloco-phase9.patch
 git apply decoupled-heloco-phase9.patch
-python -m unittest discover -s tests/decoupled_heloco -v
+PYTHONPATH=.:run_script:tests/decoupled_heloco python -m unittest discover -s tests/decoupled_heloco -v
 ```
 
 Prepare a fresh config from an **intact completed run**. This reads its saved
@@ -591,12 +700,12 @@ The preparation command constructs no model or optimizer and needs no GPU.
 It refuses to overwrite an existing config or write inside the reference run.
 
 ```bash
-python prepare_decoupled_comparison.py \
+python run_script/prepare_decoupled_comparison.py \
   --reference-run outputs/decoupled_heloco/20261007T054425-2a0714 \
   --output-config decoupled_diloco.yaml
 
-python run_decoupled_heloco.py --config-file decoupled_diloco.yaml --check-config
-python run_decoupled_heloco.py --config-file decoupled_diloco.yaml --training-timeout 1800
+python run_script/run_decoupled_heloco.py --config-file decoupled_diloco.yaml --check-config
+python run_script/run_decoupled_heloco.py --config-file decoupled_diloco.yaml --training-timeout 1800
 ```
 
 The CPU simulation and separate-process smoke commands also select DiLoCo
@@ -608,7 +717,7 @@ existing HeLoCo run and reuse the exact frozen cache from its evaluation:
 ```bash
 # Set this to the actual Logs: path printed by the completed DiLoCo run.
 diloco_run=outputs/decoupled_diloco/YOUR_COMPLETED_RUN
-python evaluate_decoupled_heloco.py \
+python run_script/evaluate_decoupled_heloco.py \
   --run-dirs outputs/decoupled_heloco/20261007T054425-2a0714 "$diloco_run" \
   --batches 100 --device cuda:0 \
   --validation-cache outputs/decoupled_heloco_evaluation/20261007T054938-a92d7c/validation_batches.pt
@@ -698,7 +807,7 @@ Apply after Phase 9:
 ```bash
 git apply --check decoupled-heloco-phase10.patch
 git apply decoupled-heloco-phase10.patch
-python -m unittest discover -s tests/decoupled_heloco -v
+PYTHONPATH=.:run_script:tests/decoupled_heloco python -m unittest discover -s tests/decoupled_heloco -v
 ```
 
 Prepare the three configs from the intact, completed 500-step HeLoCo run.
@@ -708,15 +817,15 @@ It does not modify `decoupled_heloco.yaml`, the reference run, or its cache.
 
 ```bash
 for method in diloco heloco mla; do
-  python prepare_decoupled_comparison.py \
+  python run_script/prepare_decoupled_comparison.py \
     --reference-run outputs/decoupled_heloco/20261007T054425-2a0714 \
     --method "$method" --output-config "matched_${method}.yaml" || break
 done
 
-python run_matched_baselines.py --config-file matched_diloco.yaml --check-config
-python run_matched_baselines.py --config-file matched_diloco.yaml --training-timeout 1800
-python run_matched_baselines.py --config-file matched_heloco.yaml --training-timeout 1800
-python run_matched_baselines.py --config-file matched_mla.yaml --training-timeout 1800
+python run_script/run_matched_baselines.py --config-file matched_diloco.yaml --check-config
+python run_script/run_matched_baselines.py --config-file matched_diloco.yaml --training-timeout 1800
+python run_script/run_matched_baselines.py --config-file matched_heloco.yaml --training-timeout 1800
+python run_script/run_matched_baselines.py --config-file matched_mla.yaml --training-timeout 1800
 ```
 
 Run these sequentially in the same four-GPU allocation. Check the first
@@ -734,7 +843,7 @@ three new completed `Logs:` paths, then evaluate:
 diloco_run=outputs/diloco/YOUR_COMPLETED_RUN
 heloco_run=outputs/heloco/YOUR_COMPLETED_RUN
 mla_run=outputs/mla/YOUR_COMPLETED_RUN
-python evaluate_decoupled_heloco.py \
+python run_script/evaluate_decoupled_heloco.py \
   --run-dirs \
     outputs/decoupled_heloco/20261007T054425-2a0714 \
     outputs/decoupled_diloco/20261007T060953-c3c852 \
@@ -764,13 +873,13 @@ Real CUDA baseline training remains the integration check on the GPU server.
 
 ### One YAML and one command for the five-method comparison
 
-Edit `method_comparison.yaml`, which starts with:
+Edit `run_script/method_comparison.yaml`, which starts with:
 
 ```yaml
 method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
 ```
 
-The supplied config uses four learners, 500 steps each, seed 42, and paces
+The supplied config uses four learners, 40 steps each, seed 42, and paces
 `[1, 2, 3, 1]`. `run` contains the common recipe/budget and the original
 methods' whole-model window. `decoupled` contains the two decoupled methods'
 fragment/quorum controls. `evaluation` controls the final held-out evaluation.
@@ -778,8 +887,8 @@ Remove methods from `method_run` to run a subset. Use the exact underscore
 names shown above. The single-method YAML and launchers remain available.
 
 ```bash
-python run_method_comparison.py --check-config
-python run_method_comparison.py --training-timeout 1800
+python run_script/run_method_comparison.py --check-config
+python run_script/run_method_comparison.py --training-timeout 1800
 ```
 
 The launcher validates ALL selected methods before training starts, runs each
@@ -830,3 +939,274 @@ five-method CPU training/evaluation sequence using real learner subprocesses,
 TCP/HTTP transfers, optimizer steps, exports, and one frozen validation stream.
 TorchTitan/CUDA builders in that final test are explicit CPU fixtures; GPU
 execution still needs verification in the allocated server job.
+
+## Measured convergence and coordinator resources
+
+The supplied comparison YAML enables `monitoring`. `global_every_updates` controls
+full global weight exports after that many committed outer updates; these are the
+optimizer's global weights, not HeLoCo lookahead dispatches. `learner_every_steps`
+controls each learner's own exports after completed optimizer steps. Both include
+the actual shared initialization at zero and the final training snapshot. Exports
+are immutable, evaluation-only and not resumable training checkpoints.
+
+After training, the shared evaluator evaluates every export on the exact same
+frozen held-out C4 batches. It verifies every step-zero parameter fingerprint and
+reuses the identical measured initial loss. `evaluation/trajectory.csv` retains
+loss, next-token accuracy, perplexity, step, training time, and processed tokens.
+`convergence_plot.png` shows global held-out loss versus total observed tokens;
+`global_loss_vs_time.png` shows it versus training elapsed time.
+`learner_convergence.png` has one panel per method, showing all learners' held-out
+losses. Local training losses remain available separately in learner steps.csv.
+Neither x-axis calls a local step an outer round. Different methods need not have
+different curves. Global token coordinates are asynchronous observations of
+cumulative learner work, not a simultaneous barrier or merged-token accounting.
+
+`central_memory.csv` samples Linux process RSS and process CPU time. It excludes
+child learners and includes Python, threads, model/optimizer, buffers and monitoring
+allocations. The sampled maximum is not a guaranteed capture of sub-sample peaks.
+`central_processing.csv` measures outer apply (baseline), merge/correction/update
+(decoupled), and dispatch snapshot construction or enqueue. Thread CPU and wall
+seconds are separate; wall can include lock contention. Network waiting, complete
+HTTP serialization, and end-to-end communication latency are not represented by
+these compute phases. Protocol-byte totals retain each method's original accounting
+scope, so they are not interchangeable with physical network-interface traffic.
+`memory_footprint.csv` summarizes measured resources, training time, protocol bytes,
+and global snapshot overhead. No theoretical memory or missing-value zero is used.
+
+Evaluation runs afterward, but snapshot copies/writes happen during training and
+can affect scheduling, memory and runtime; recorded time is instrumented runtime,
+not uninstrumented throughput. For larger experiments increase snapshot intervals
+and run an additional monitoring-disabled throughput comparison. At FP32, every
+13.6M-parameter snapshot is about 52 MiB; storage scales with snapshots and learners.
+Monitoring is opt-in for API-created configs and enabled in supplied YAMLs. Set
+`monitoring.enabled: false` to disable snapshots and central resource recording.
+Older runs cannot retrospectively produce these measurements.
+
+
+### Completion endpoints and remaining paper-fidelity dependencies
+
+Forced trajectory exports bypass the duplicate-update guard. They use a separate
+`NNNNNNNN-final.pt` file, so the last update observation and the final completed
+token/time observation both survive. The weights can be equal in these records:
+local work after the last merge does not imply another global update. Evaluation
+checks final tokens against each completed run/learner summary. Older unmarked
+exports are labeled `legacy_unverified`; failed learners without a final export
+are labeled `interrupted_learner`. Neither is presented as a verified endpoint.
+Resource CSVs include completed observed tokens, and the resource plot flags
+unequal totals. Equal totals alone do not match synchronization frequency, outer
+work, hardware, or monitoring overhead.
+
+The dependency order for further implementation is:
+1. Implemented below: carry the scalar syncer clock in messages and make worker
+   stopping/final drain follow it while retaining local-budget compatibility.
+2. Permit concurrent transfers for different fragments, preserving per-fragment
+   revision order, capture ownership, retries, and final checkpoint consistency.
+3. Add CPU syncer replicas and their fragment all-reduce. The paper describes
+   replicas maintaining global model and optimizer state; simply partitioning
+   tensors among processes would be a different architecture.
+4. Sample each syncer replica and report both peak per-replica RSS and aggregate
+   RSS, including all-reduce bytes/time and snapshot overhead. Validate resource
+   comparisons at explicit completed token budgets.
+
+Shared-clock stopping and bounded concurrent captures are added in the following
+incremental sections. The runtime still has one central syncer; endpoint repair
+alone never changed the architecture or claimed a memory/runtime advantage.
+
+
+### Shared syncer-clock stopping (incremental implementation)
+
+The YAML selects the stopping rule independently of fragment order:
+```yaml
+decoupled:
+  scheduler: paper_offsets
+  stopping: syncer_steps       # or local_steps (existing behavior)
+  syncer_steps: 100            # T; null in local_steps mode
+  clock_lr_schedule: constant  # or local_horizon
+```
+
+T counts syncer schedule slots, not local optimizer steps or complete fragment
+cycles. An update carries its committed slot in the same frame as its weights.
+Learners apply both at a safe optimizer boundary and report `syncer_step` in
+metadata and step CSVs. The clock never regresses. A terminal idle slot is sent
+only after all committed fragment revisions have been applied by healthy peers.
+A learner in an optimizer step completes that step, then stops starting local
+work at the target; idle boundaries remain active for final delivery and shutdown.
+Captures after T are prohibited. With sparse offsets, T need not update a
+fragment; the final idle clock still reaches every healthy learner.
+
+In clock mode `run.steps` no longer caps local work. The default clock LR policy
+is constant (zero warmup and minimum multiplier 1), preventing the old local
+horizon from silently zeroing learning rates. Select `local_horizon` to retain
+the preset schedule with `run.steps` as its horizon. Local-budget mode retains
+the original LR schedule and token budgets. The normal training timeout remains
+the failure bound; no extra local cap is silently substituted for the clock.
+
+Five-method comparisons retain `stopping: local_steps`. Clock stopping is
+accepted only for decoupled-only comparisons; such runs can consume different
+token totals and are not presented as matched-token results. Summaries record
+the target and observed syncer clock, and `steps_per_learner` is null in clock
+mode, with actual local steps/tokens retained per learner.
+
+This clock increment adds the shared scalar syncer clock and stopping path.
+Concurrent captures are added below; syncer-shard all-reduce, vector-clock
+checkpoint recovery, and automatic trainer restart remain unimplemented.
+
+
+### Bounded concurrent fragment captures
+
+```yaml
+decoupled:
+  max_inflight_captures: 2  # 1 retains serial captures; valid range 1..num_fragments
+```
+
+Both `paper_offsets` and `round_robin` use the selected capture limit. Scheduling
+reservations advance separately from committed outer steps, so different
+fragments can be requested and transferred before the previous outer update
+finishes. Only one capture for each fragment may be retained. Completed captures
+waiting for an older slot count against the limit. The learner cache uses the
+same limit; initialization and the existing per-frame size cap are unchanged.
+
+Outer commits remain in schedule order. A younger completed capture waits
+without expiring while an older capture is pending; it cannot advance the shared
+clock or cause early learner stopping. Each capture has an independent capture
+timeout and grace window. A failed/timed-out slot releases only its requests,
+retains its schedule position, and retries with fresh request IDs. Younger
+snapshots remain cached. Each cohort is sealed at its own grace deadline,
+excluding unfinished requests and learners that become ready after the window,
+even while the capture waits behind an older slot. Late contributors within an
+open window use fresh per-learner IDs, avoiding
+watermark rejection when that learner already captured a younger slot.
+
+Reattachment removes the old endpoint's captures from every reserved slot before
+it can contribute again. All-slot cancellation resets only reservations, without
+changing model weights, momentum, revisions, or the committed clock. Individual
+pipeline cancellation must retain its slot. A shared-clock target also limits
+reservations; no capture is admitted beyond T. Final export/shutdown waits for
+all reserved slots through T to commit and for healthy learners to apply the
+committed revisions. Local-budget draining remains supported.
+
+`capture_events.csv` records begin, quorum-ready, prepared, retry, and commit events with
+schedule slots, fragments, elapsed seconds, and retained capture counts. The run
+summary includes `max_inflight_captures` and measured `peak_inflight_captures`.
+These are actual runtime observations; transfer bytes remain the measured
+protocol counters. A single TCP writer per learner still serializes packets on
+that connection. Concurrent capture lifetimes do not imply multiple physical
+network links or parallel outer optimizer kernels. More retained snapshots can
+increase coordinator/learner memory; measured RSS, rather than a memory savings
+assumption, remains the comparison source.
+
+Tests deliberately delay one fragment's TCP snapshot while another is delivered,
+verify two retained captures for both methods, verify ordered clocks and sparse
+stopping, compare retry results against one numerical outer update, and exercise
+local-budget drain with a hard learner-process crash. CPU fixture delays are
+test-only; the GPU runtime injects no synthetic delay.
+
+The supplied YAML keeps limit 1 for compatibility. Set it to 2 in the selected
+single-method or comparison YAML to enable this pipeline. Syncer replicas and
+fragment all-reduce are the next architecture step; the central syncer is still
+unsharded.
+
+
+## Incremental syncer sharding (after concurrent captures)
+
+Apply `decoupled-syncer-sharding.patch` after the final-endpoints, shared-clock,
+and concurrent-capture patches, in that order. The default `syncer_shards: 1`
+keeps the existing central optimizer. To enable persistent CPU replicas:
+
+```yaml
+decoupled:
+  syncer_shards: 3  # normally one replica per learner
+  syncer_timeout: 60.0
+  max_inflight_captures: 2
+```
+
+Replicas are independent spawned CPU processes on the coordinator's host.
+Each owns the full global FP32 model and outer momentum. The coordinator owns
+capture admission, normalized contribution weights, and ordered commits;
+it routes each captured contribution to `learner_id % syncer_shards`.
+Every replica produces local weighted fragment statistics, then participates
+in a reduce-to-replica-zero/broadcast all-reduce through direct IPC pipes.
+The coordinator does not perform the numerical reduction or outer update.
+Weighted averaging reduces weighted deltas; RDA reduces weighted directions
+and radii before normalizing the combined direction. `paper_rda` preserves
+embedding averaging, and both HeLoCo correction orders retain their meaning.
+All replicas execute the same outer update and retain identical state, within
+floating-point tolerance of the central reduction. Only the selected fragment
+is reduced; full-model exports are separate, optional monitoring/checkpoint work.
+Each replica uses one Torch compute thread.
+
+Unavailable learners contribute zero; their replicas remain alive and participate
+in every collective. A failed or stalled **syncer replica** aborts the run,
+cleans up all replica processes, and cannot advance the coordinator revision
+or clock for the failed update. This is fail-stop behavior, not distributed
+rollback or automatic replica recovery. Checkpoints remain non-resumable.
+Concurrent captures retain their capacity limit and commit order; outer
+collectives execute sequentially in that order.
+
+This is a same-host implementation of the paper's replica/fragment-all-reduce
+architecture. Cross-host syncer placement and a network collective backend are
+not implemented. Learner TCP ingress and dispatch still pass through the
+coordinator, so this patch does not establish decentralized network bandwidth
+or guaranteed speedup. The coordinator also retains initialization-model
+references held by its caller and pending captured fragments; replica state
+and IPC serialization add memory. It does not promise reduced aggregate RSS.
+
+With monitoring enabled, `syncer_memory.csv` records coordinator and replica
+RSS/CPU plus aggregate RSS. Replicas sample their own Linux RSS and process CPU
+every 0.1 seconds; aggregate rows combine the coordinator sample with latest
+replica samples, so replica observations can be up to 0.1 seconds older. Aggregate rows
+are omitted if any replica observation is missing. RSS sums can double-count
+shared pages. Existing `central_memory.csv` remains coordinator-only.
+`syncer_replica_processing.csv` records per-update/per-rank compute CPU and
+wall time, including collective waiting. `collective_tensor_bytes` describes
+logical tensor payload per rank (including control scalars), not actual wire
+bytes or serialization overhead. The resource comparison plots aggregate RSS
+and coordinator-thread-plus-replica processing CPU; it skips sharded runs lacking an
+aggregate measurement. Coordinator processing wall time already includes the
+replica round trip and is not summed again with replica waiting time.
+
+Validation covers actual spawned replicas, all merge modes, both HeLoCo
+correction orders, momentum across interleaved fragments, empty replica
+contributions, killed/stopped replicas, and TCP shared-clock/concurrent-capture
+runs with a learner crash. GPU execution and cross-host scaling require
+separate validation on the training cluster.
+
+
+## Learner shutdown deadline fix (after syncer sharding)
+
+Apply `decoupled-learner-shutdown.patch` after the syncer-sharding patch.
+No YAML changes are required. A stopped protocol ACK confirms completion of
+training, final boundary handling, and the worker's final trajectory export;
+it does not confirm that trainer/CUDA/distributed cleanup and process exit
+have finished. Both decoupled and original-method coordinators previously
+allowed at most five seconds for process exit after protocol/file completion.
+They now poll all eligible learners under the existing shared
+`--training-timeout` deadline. A nonzero exit fails promptly with learner ID,
+PID, exit code and log path. Slow teardown reports pending learner IDs every
+ten seconds; reaching the overall deadline still fails and triggers the
+existing process cleanup. No completion is declared while a required learner
+process is still running. Training, merge, stopping, and budget semantics are
+unchanged. CPU regressions exercise six-second post-ACK teardown with real
+sharded/concurrent-capture sessions for both decoupled methods, deadline expiry,
+and a failed learner alongside a still-running process. GPU teardown latency
+and any actual teardown deadlock require verification on the GPU node.
+
+### TCP congestion and progress reports
+
+Ordinary unsent progress reports use one replaceable queue slot. Reports contain
+cumulative local steps/tokens and complete fragment metadata; replacing a report
+does not discard training or snapshot counters. Intermediate report arrival times
+can differ, so asynchronous cohort selection can differ under congestion.
+Snapshots, updates, releases, ACKs, errors and lifecycle messages retain FIFO
+delivery and use bounded capacity waits. Socket failures and expired deadlines
+still fail; degraded runs remain excluded from matched-budget comparisons.
+The GPU run deadline bounds required-message enqueue waits and learner shutdown.
+The coordinator pumps learner messages on its owning thread while waiting for
+replica IPC; this does not start another synchronization or reorder commits.
+
+Each GPU learner and the coordinator save `transport_diagnostics.json`, including
+queue peak, replaced progress reports, congestion retries, bytes and cumulative
+serialization/socket-send time. Queues retain at most the configured required
+frame capacity plus one unsent progress report and one writer frame. Reader
+congestion retains one decoded frame while waiting for incoming queue capacity.
+No YAML changes are required.

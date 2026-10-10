@@ -1,6 +1,7 @@
 """Interval/grace behavior using a fake clock and actual learner boundaries."""
 
 import copy
+from concurrent.futures import Future
 import unittest
 
 import torch
@@ -23,7 +24,7 @@ class TimingTests(unittest.TestCase):
         self.learners = [DecoupledLearner(m, 1, learner_id=i) for i, m in enumerate(self.models)]
         self.syncer = DecoupledSyncer(model, self.learners, 1, min_quorum=2, overlap_steps=1, outer_method="sgd")
         self.now = 0.0
-        self.controller = TimedSyncController(self.syncer, sync_interval=1.0, grace_window_factor=factor, clock=lambda: self.now)
+        self.controller = TimedSyncController(self.syncer, sync_interval=1.0, grace_window_factor=factor, adaptive_grace=False, clock=lambda: self.now)
 
     def train(self, i):
         optimizer = torch.optim.SGD(self.models[i].parameters(), lr=0.1)
@@ -139,6 +140,45 @@ class TimingTests(unittest.TestCase):
         self.tick(0.5)
         with self.assertRaises(ValueError):
             self.tick(0.4)
+
+    def test_adaptive_grace_fits_measured_slack_and_subtracts_communication(self):
+        self.make(count=2)
+        self.controller.adaptive = True
+        for i in range(2):
+            self.train(i)
+        self.tick(1.0)  # One step per second observed on both learners.
+        for learner in self.learners:
+            learner.boundary()
+        self.tick(1.1)  # Quorum capture took .1s: .5 * (1 - .1) = .45s.
+        self.assertAlmostEqual(self.controller.step_time_ema, 1.)
+        self.assertAlmostEqual(self.controller.last_grace_seconds, .45)
+        self.assertIsNone(self.tick(1.54))
+        self.assertIsNotNone(self.tick(1.56))
+        # A slower communication estimate must reduce, not increase, grace.
+        self.controller.sync_time_ema = .7
+        self.assertAlmostEqual(self.controller._grace(.1), .1)
+        self.controller.sync_time_ema = 2.
+        self.assertEqual(self.controller._grace(.1), 0.)
+
+    def test_unknown_compute_pace_does_not_invent_slack(self):
+        self.make(count=2)
+        self.controller.adaptive = True
+        self.assertEqual(self.controller._grace(.1), 0.)
+
+    def test_lost_quorum_during_grace_cancels_without_committing(self):
+        self.make(count=2)
+        for i in range(2):
+            self.train(i)
+        self.tick(1.)
+        for learner in self.learners:
+            learner.boundary()
+        self.tick(1.1)
+        self.syncer._active.futures[1] = Future()
+        self.syncer._active.futures[1].cancel()
+        self.assertIsNone(self.tick(1.61))
+        self.assertEqual(self.controller.quorum_losses, 1)
+        self.assertEqual(self.syncer.fragment_revisions, (0,))
+        self.assertFalse(self.syncer.has_active_sync)
 
 
 if __name__ == "__main__":

@@ -57,6 +57,8 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
                          backup_device="cpu", reset_inner_state=False, should_quantize=False,
                          wire_bf16=False, num_fragments=1, min_replicas=0,
                          sync_timeout=min(options.ps_timeout, max(0.1, deadline - time.monotonic())))
+    from .monitoring import Trajectory
+    trajectory = Trajectory(folder, config.monitoring, kind="learner")
     iterator = trainer.batch_generator(trainer.dataloader)
     factors = options.island_slowness_factors
     factor = factors[0] if len(factors) == 1 else factors[learner_id]
@@ -85,6 +87,8 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
             wait_for_gate(run_dir / "start.json", deadline)
             client._window_start = time.monotonic()
             origin = time.monotonic()
+            trajectory.origin = origin
+            trajectory.save(0, dict(model.named_parameters()), force=True)
             with (folder / "steps.csv").open("w", newline="") as stream, (folder / "windows.csv").open("w", newline="") as windows:
                 steps = csv.DictWriter(stream, fieldnames=("step", "elapsed_s", "step_s", "tokens", "total_tokens", "loss", "grad_norm", "applied_revisions"))
                 commits = csv.DictWriter(windows, fieldnames=("push", "local_step", "window_steps", "window_tokens", "base_revision", "received_revision", "exchange_s"))
@@ -126,6 +130,7 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
                                     "step_s": duration, "tokens": batch.tokens, "total_tokens": total_tokens,
                                     **record, "applied_revisions": json.dumps([client._baseline_revision])})
                     stream.flush()
+                    trajectory.save(trainer.step, dict(model.named_parameters()), tokens=total_tokens, force=trainer.step >= options.steps)
                     # Original-client pacing is explicitly disabled by the
                     # coordinator. Delay compute time only, once per step.
                     delay = duration * (factor - 1)

@@ -17,7 +17,7 @@ class LauncherTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.config_path = Path(self.directory.name) / "experiment.yaml"
-        self.config = yaml.safe_load((launcher.REPO_ROOT / "decoupled_heloco.yaml").read_text())
+        self.config = yaml.safe_load((launcher.REPO_ROOT / "run_script" / "decoupled_heloco.yaml").read_text())
 
     def write_config(self):
         self.config_path.write_text(yaml.safe_dump(self.config))
@@ -85,13 +85,13 @@ class LauncherTests(unittest.TestCase):
 
     def test_each_baseline_delegates_exactly_once_and_preserves_settings(self):
         self.config["run"]["steps"] = 17
-        original_heloco_yaml = (launcher.REPO_ROOT / "heloco.yaml").read_bytes()
+        original_heloco_yaml = (launcher.SCRIPT_DIR / "heloco.yaml").read_bytes()
         for method in ("heloco", "diloco", "mla"):
             with self.subTest(method=method):
                 config_paths = []
 
                 def fake_launch(command, cwd):
-                    self.assertEqual(command[:2], [launcher.sys.executable, str(launcher.REPO_ROOT / "run_heloco.py")])
+                    self.assertEqual(command[:2], [launcher.sys.executable, str(launcher.SCRIPT_DIR / "run_heloco.py")])
                     self.assertEqual(cwd, launcher.REPO_ROOT)
                     path = Path(command[3])
                     config_paths.append(path)
@@ -108,7 +108,7 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(status, 7)
                 launch.assert_called_once()
                 self.assertFalse(config_paths[0].exists())
-        self.assertEqual((launcher.REPO_ROOT / "heloco.yaml").read_bytes(), original_heloco_yaml)
+        self.assertEqual((launcher.SCRIPT_DIR / "heloco.yaml").read_bytes(), original_heloco_yaml)
 
     def test_bad_configurations_fail_before_launch(self):
         cases = [
