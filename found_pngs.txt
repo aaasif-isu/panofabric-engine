@@ -1,1 +1,0 @@
-./run_script/parameter_server_memory_plot.png
