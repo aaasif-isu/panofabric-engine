@@ -43,3 +43,9 @@ Sessionx.vim
 heloco/
 .venv/
 nohup.out
+
+# Ignore patch files
+*.patch
+
+# Ignore paper directory
+/paper/
