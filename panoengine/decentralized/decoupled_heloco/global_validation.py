@@ -1,3 +1,8 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+from panoengine.decentralized.patch_dataset import patch_torchtitan_c4
+patch_torchtitan_c4()
 """Single-GPU held-out validation of completed dense 15M global exports."""
 
 import csv
@@ -17,7 +22,7 @@ from .evaluation import (evaluate_model, freeze_batches, load_global_parameters,
 from .gpu_recipe import build_initial_model, build_recipe, validate_dense_options, validate_tokenizer, validate_training_options
 
 
-def load_run(folder):
+def load_run(folder, checkpoint_name="global_model.pt"):
     folder = Path(folder).resolve()
     config = load_config(folder / "experiment.yaml")
     options = SimpleNamespace(**json.loads((folder / "run-options.json").read_text()))
@@ -45,7 +50,7 @@ def load_run(folder):
     for name in ("module", "config", "seed", "seq_len", "batch", "hf_assets"):
         if name in config.run and config.run[name] != getattr(options, name):
             raise ConfigError(f"saved experiment and run-options disagree on {name}")
-    checkpoint = folder / "global_model.pt"
+    checkpoint = folder / checkpoint_name
     if not checkpoint.is_file():
         raise ConfigError(f"global checkpoint does not exist: {checkpoint}")
     return {"folder": folder, "config": config, "options": options, "summary": summary,

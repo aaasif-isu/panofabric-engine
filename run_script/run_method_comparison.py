@@ -86,7 +86,7 @@ def load_comparison(path):
             options.append(resolved)
     clock_mode = any(config.decoupled.stopping == "syncer_steps" for config in configs)
     if clock_mode and any(method not in DECOUPLED_METHODS for method in methods):
-        raise ConfigError("syncer_steps stopping supports decoupled-only comparisons; use local_steps for a matched five-method token budget")
+        print("Note: running syncer_steps across mixed methods. Be aware that token counts will differ between normal and decoupled baselines.", file=sys.stderr)
     return {"methods": methods, "configs": configs, "options": options,
             "evaluation": evaluation, "source": content,
             "source_sha256": hashlib.sha256(content.encode()).hexdigest()}
@@ -182,16 +182,28 @@ def completed_run(folder, config, options):
     if not (folder / "global_model.pt").is_file():
         raise RuntimeError(f"{config.method} did not export global_model.pt")
     learners = summary.get("learners", [])
-    clock_mode = config.method in DECOUPLED_METHODS and config.decoupled.stopping == "syncer_steps"
+    clock_mode = config.decoupled.stopping == "syncer_steps"
+    time_mode = config.decoupled.stopping == "time"
     if (len(learners) != options.islands
             or [r.get("learner_id") for r in learners] != list(range(options.islands))
             or any(type(r.get("total_tokens")) is not int or r["total_tokens"] < 0 for r in learners)):
         raise RuntimeError(f"{config.method} has invalid completed learner records")
     if clock_mode:
-        target = config.decoupled.syncer_steps
-        if (summary.get("stopping_mode") != "syncer_steps" or summary.get("syncer_step_target") != target
-                or summary.get("syncer_step") != target or any(r.get("syncer_step") != target for r in learners)):
-            raise RuntimeError(f"{config.method} did not complete the shared syncer-clock budget")
+        if config.method in DECOUPLED_METHODS:
+            target = config.decoupled.syncer_steps
+            if (summary.get("stopping_mode") != "syncer_steps" or summary.get("syncer_step_target") != target
+                    or summary.get("syncer_step") != target or any(r.get("syncer_step") != target for r in learners)):
+                raise RuntimeError(f"{config.method} did not complete the shared syncer-clock budget")
+        else:
+            # Note: For baseline methods, the stopping condition happens asynchronously on the learners. 
+            # We don't guarantee exact equality here. We just need to make sure we didn't stop super early.
+            # Normal methods scale their required syncs down by num_fragments if configured to match total tokens processed.
+            target = config.decoupled.syncer_steps // config.decoupled.num_fragments if config.decoupled.scale_baselines_by_fragments else config.decoupled.syncer_steps
+            if summary.get("sync_updates", 0) < target:
+                raise RuntimeError(f"{config.method} did not complete the shared syncer-clock budget (got {summary.get('sync_updates')} < {target})")
+    elif time_mode:
+        if any(r.get("total_tokens") < 1 for r in learners):
+            raise RuntimeError(f"{config.method} completed zero training tokens under the time budget")
     elif (summary.get("steps_per_learner") != options.steps
             or any(r.get("total_local_steps") != options.steps or r["total_tokens"] < 1 for r in learners)):
         raise RuntimeError(f"{config.method} did not complete the shared local training budget")
@@ -365,6 +377,14 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
             manifest["runs"][method] = {"status": "running", "folder": str(run_dir)}
             write_json(folder / "comparison.json", manifest)
             print(f"\nMethod {index}/{len(comparison['methods'])}: {method}", flush=True)
+            dist_mode = getattr(options, "data_distribution", "iid")
+            languages = getattr(options, "languages", [])
+            print(f"Data distribution: {dist_mode}")
+            if dist_mode in ("non_iid", "both") and languages:
+                _lang_names = {"en": "English", "fr": "French", "de": "German", "es": "Spanish", "it": "Italian", "pt": "Portuguese"}
+                for i in range(options.islands):
+                    lang = languages[i % len(languages)]
+                    print(f"Learner {i} → {_lang_names.get(lang, lang)} ({lang})")
             # The child's own deadline includes startup/drain. Allow a small
             # margin to publish diagnostics before terminating its session.
             command_runner(command, folder / f"{method}.log", repo_root, training_timeout + 30.0)
@@ -374,6 +394,14 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
             initial_sha = summary["initial_parameters_sha256"]
             manifest["runs"][method].update(status="passed", summary=summary)
             write_json(folder / "comparison.json", manifest)
+            
+            try:
+                import subprocess
+                print(f"Generating individual bandwidth figures for {method}...", flush=True)
+                subprocess.run([sys.executable, str(Path(repo_root) / "panoengine" / "decentralized" / "plot_bandwidth.py"), "--dir", str(run_dir)], check=False)
+            except Exception as e:
+                print(f"Failed to generate bandwidth figures for {method}: {e}")
+                
         manifest["initial_parameters_sha256"] = initial_sha
         manifest.pop("current_method", None)
         evaluation = comparison["evaluation"]
@@ -381,6 +409,39 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
             manifest["status"] = "evaluating"
             write_json(folder / "comparison.json", manifest)
             evaluation_dir = folder / "evaluation"
+            
+            dist_mode = getattr(comparison["options"][0], "data_distribution", "iid")
+            languages = getattr(comparison["options"][0], "languages", [])
+            is_non_iid = dist_mode in ("non_iid", "both") and languages
+            
+            unique_languages = []
+            if is_non_iid:
+                islands = comparison["options"][0].islands
+                assigned_languages = [languages[i % len(languages)] for i in range(islands)]
+                unique_languages = list(set(assigned_languages))
+                unique_languages.sort()
+                
+            if is_non_iid and cache_path is None:
+                cache_path = folder / "multilingual_cache.pt"
+                print(f"\nPreparing balanced multilingual validation cache ({evaluation['batches']} batches)...", flush=True)
+                import subprocess
+                prep_cmd = [
+                    sys.executable, str(SCRIPT_DIR / "prepare_multilingual_cache.py"),
+                    "--run-dir", str(manifest["runs"][comparison["methods"][0]]["folder"]),
+                    "--languages", *unique_languages,
+                    "--batches", str(evaluation["batches"]),
+                    "--output", str(cache_path)
+                ]
+                proc = subprocess.run(prep_cmd, cwd=repo_root, env=os.environ, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"Failed to prepare multilingual cache: {proc.stderr}")
+                try:
+                    lang_counts = json.loads(proc.stdout.strip().split('\n')[-1])
+                    comp_str = ", ".join(f"{lang}: {count}" for lang, count in lang_counts.items())
+                    print(f"Language composition: {comp_str}", flush=True)
+                except Exception as e:
+                    print(f"Warning: Could not parse language counts: {e}")
+
             command = [sys.executable, str(SCRIPT_DIR / "evaluate_decoupled_heloco.py"), "--run-dirs",
                        *[manifest["runs"][m]["folder"] for m in comparison["methods"]],
                        "--batches", str(evaluation["batches"]), "--device", evaluation["device"], "--output-dir", str(evaluation_dir)]
@@ -392,18 +453,140 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
             rows = comparison_rows(report, manifest)
             fields = ("method", "loss", "perplexity", "next_token_accuracy", "valid_tokens", "processed_tokens",
                       "steps_per_learner", "sync_updates", "training_elapsed_s", "run_dir", "checkpoint")
+            lang_fields = ("method", "eval_language", "loss", "perplexity", "next_token_accuracy", "valid_tokens", "processed_tokens",
+                           "steps_per_learner", "sync_updates", "training_elapsed_s", "run_dir", "checkpoint")
             with (folder / "comparison.csv").open("w", newline="") as stream:
                 writer = csv.DictWriter(stream, fieldnames=fields)
                 writer.writeheader()
                 writer.writerows(rows)
             manifest.update(status="passed", evaluation=report, results=rows)
-            print(f"\nComparison metrics: {folder / 'comparison.csv'}", flush=True)
+            
+            print("\n=====================================================================================================")
+            print("1. OVERALL GLOBAL EVALUATION SUMMARY")
+            print("=====================================================================================================")
+            print(f"{'Method':<20} | {'Loss':<10} | {'Perplexity':<12} | {'Accuracy':<10}")
+            print("-" * 61)
+            for row in rows:
+                if row["method"] == "initial": continue
+                print(f"{row['method']:<20} | {row['loss']:<10.4f} | {row['perplexity']:<12.4f} | {row['next_token_accuracy']:<10.4f}")
+            print("-" * 61)
+            print(f"Metrics saved to: {folder / 'comparison.csv'}\n", flush=True)
+
+            # --- NEW NON-IID EVALUATIONS ---
+            dist_mode = getattr(comparison["options"][0], "data_distribution", "iid")
+            languages = getattr(comparison["options"][0], "languages", [])
+            if dist_mode in ("non_iid", "both") and languages:
+                islands = comparison["options"][0].islands
+                assigned_languages = [languages[i % len(languages)] for i in range(islands)]
+                unique_languages = list(set(assigned_languages))
+
+                # 2. Per-language global evaluation
+                manifest["evaluation_per_language"] = {}
+                import subprocess
+                all_lang_rows = []
+                for lang in unique_languages:
+                    lang_eval_dir = folder / f"evaluation_{lang}"
+                    lang_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_decoupled_heloco.py"), "--run-dirs",
+                                *[manifest["runs"][m]["folder"] for m in comparison["methods"]],
+                                "--batches", str(evaluation["batches"]), "--device", evaluation["device"], "--output-dir", str(lang_eval_dir)]
+                    print(f"Evaluating global models on language '{lang}'...", flush=True)
+                    env = dict(os.environ, ISLAND_LANGUAGE=lang)
+                    with open(folder / f"evaluation_{lang}.log", "w") as log_f:
+                        proc = subprocess.run(lang_cmd, cwd=repo_root, env=env, stdout=log_f, stderr=subprocess.STDOUT)
+                    if proc.returncode != 0:
+                        print(f"Warning: Evaluation failed for language {lang}")
+                        continue
+
+                    lang_report = json.loads((lang_eval_dir / "evaluation.json").read_text())
+                    manifest["evaluation_per_language"][lang] = lang_report
+
+                    lang_rows = comparison_rows(lang_report, manifest)
+                    for r in lang_rows:
+                        if r["method"] == "initial": continue
+                        r["eval_language"] = lang
+                        all_lang_rows.append(r)
+                        
+                    with (folder / f"comparison_{lang}.csv").open("w", newline="") as stream:
+                        writer = csv.DictWriter(stream, fieldnames=lang_fields, extrasaction='ignore')
+                        writer.writeheader()
+                        writer.writerows(lang_rows)
+
+                if all_lang_rows:
+                    print("\n=====================================================================================================")
+                    print("2. LANGUAGE-WISE GLOBAL EVALUATION SUMMARY")
+                    print("=====================================================================================================")
+                    print(f"{'Method':<20} | {'Eval Lang':<10} | {'Loss':<10} | {'Perplexity':<12} | {'Accuracy':<10}")
+                    print("-" * 74)
+                    for r in all_lang_rows:
+                        print(f"{r['method']:<20} | {r['eval_language']:<10} | {r['loss']:<10.4f} | {r['perplexity']:<12.4f} | {r['next_token_accuracy']:<10.4f}")
+                    print("-" * 74)
+                    print(f"Metrics saved to: {folder} / comparison_<lang>.csv\n", flush=True)
+
+                # 3. Per-learner local evaluation
+                print("Evaluating each learner's local model on its assigned language...", flush=True)
+                manifest["evaluation_local"] = {}
+                local_results = []
+                for method in comparison["methods"]:
+                    run_dir = Path(manifest["runs"][method]["folder"])
+                    manifest["evaluation_local"][method] = {}
+                    for i, lang in enumerate(assigned_languages):
+                        local_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_local.py"),
+                                     "--run-dir", str(run_dir), "--learner-id", str(i),
+                                     "--language", lang, "--batches", str(evaluation["batches"]),
+                                     "--device", evaluation["device"]]
+                        proc = subprocess.run(local_cmd, cwd=repo_root, env=os.environ, capture_output=True, text=True)
+                        if proc.returncode != 0:
+                            print(f"Warning: Local evaluation failed for {method} learner {i}:\n{proc.stderr}")
+                            continue
+
+                        try:
+                            res = json.loads(proc.stdout.strip().split('\n')[-1])
+                            manifest["evaluation_local"][method][f"learner_{i}"] = res
+                            local_results.append({
+                                "method": method,
+                                "learner_id": i,
+                                "language": lang,
+                                "loss": res["loss"],
+                                "perplexity": res["perplexity"],
+                                "next_token_accuracy": res["next_token_accuracy"]
+                            })
+                        except Exception as e:
+                            print(f"Warning: Could not parse local eval for {method} learner {i}: {e}\nOutput: {proc.stdout}")
+
+                if local_results:
+                    print("\n=====================================================================================================")
+                    print("3. LANGUAGE-WISE LOCAL EVALUATION SUMMARY")
+                    print("=====================================================================================================")
+                    print(f"{'Method':<20} | {'Learner':<8} | {'Lang':<5} | {'Loss':<10} | {'Perplexity':<12} | {'Accuracy':<10}")
+                    print("-" * 80)
+                    for r in local_results:
+                        print(f"{r['method']:<20} | {r['learner_id']:<8} | {r['language']:<5} | {r['loss']:<10.4f} | {r['perplexity']:<12.4f} | {r['next_token_accuracy']:<10.4f}")
+                    print("-" * 80)
+                    print(f"Local metrics saved to: {folder / 'comparison_local.csv'}\n", flush=True)
+
+                local_fields = ("method", "learner_id", "language", "loss", "perplexity", "next_token_accuracy")
+                with (folder / "comparison_local.csv").open("w", newline="") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=local_fields)
+                    writer.writeheader()
+                    writer.writerows(local_results)
+
+            write_json(folder / "comparison.json", manifest)
+            # --- END NON-IID EVALUATIONS ---
+
         else:
             manifest["status"] = "trained_only"
         manifest["elapsed_s"] = time.monotonic() - started
         print(f"COMPARISON {'PASSED' if evaluation['enabled'] else 'TRAINING COMPLETED'}: {folder / 'comparison.json'}", flush=True)
         generate_convergence_plot(folder, manifest.get("runs", {}))
         generate_memory_plot(folder, manifest.get("runs", {}))
+        
+        try:
+            import subprocess
+            print("Generating bandwidth comparison figures...", flush=True)
+            subprocess.run([sys.executable, str(Path(repo_root) / "panoengine" / "decentralized" / "plot_bandwidth.py"), "--dir", str(folder), "--comparison"], check=False)
+        except Exception as e:
+            print(f"Failed to generate bandwidth comparison figures: {e}")
+        
         return 0
     except KeyboardInterrupt:
         manifest.update(status="interrupted", error="interrupted by user")

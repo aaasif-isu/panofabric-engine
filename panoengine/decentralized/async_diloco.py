@@ -112,14 +112,26 @@ def _read_exact_into(stream: BinaryIO, view: memoryview) -> None:
     # readinto avoids materializing each chunk; every stream we use here
     # (http.server's rfile, http.client's HTTPResponse) is a BufferedIOBase.
     readinto = getattr(stream, "readinto", None)
+    try:
+        from panoengine.decentralized.bandwidth import get_monitor
+        monitor = get_monitor()
+    except ImportError:
+        monitor = None
+    
+    # Chunk sizes limit the stall per read, ensuring bandwidth ticks regularly.
+    CHUNK_SIZE = 256 * 1024
+    
     while off < nbytes:
+        chunk_len = min(nbytes - off, CHUNK_SIZE)
         if readinto is not None:
-            n = readinto(view[off:])
+            n = readinto(view[off:off+chunk_len])
         else:  # pragma: no cover - test doubles / exotic streams
-            chunk = stream.read(nbytes - off)
+            chunk = stream.read(chunk_len)
             n = len(chunk)
             if n:
                 view[off : off + n] = chunk
+        if monitor and n:
+            monitor.record("upload", n)
         if not n:
             raise IOError(
                 f"connection closed after {off}/{nbytes} payload bytes"
@@ -859,8 +871,26 @@ class AsyncDiLoCoServer:
                         "Content-Length", str(len(head) + payload.nbytes)
                     )
                     self.end_headers()
+                    
+                    try:
+                        from panoengine.decentralized.bandwidth import get_monitor
+                        monitor = get_monitor()
+                    except ImportError:
+                        monitor = None
+
+                    CHUNK_SIZE = 256 * 1024
+                    # Write header
                     self.wfile.write(head)
-                    self.wfile.write(payload)
+                    if monitor:
+                        monitor.record("download", len(head))
+                        
+                    # Write payload in chunks
+                    payload_len = payload.nbytes
+                    for i in range(0, payload_len, CHUNK_SIZE):
+                        chunk = payload[i:i+CHUNK_SIZE]
+                        self.wfile.write(chunk)
+                        if monitor:
+                            monitor.record("download", len(chunk))
                 except Exception as exc:
                     # Fail the sync fast with a plain HTTP error: the worker
                     # drops the push and resyncs instead of wedging.
@@ -920,7 +950,19 @@ class AsyncDiLoCoServer:
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                
+                try:
+                    from panoengine.decentralized.bandwidth import get_monitor
+                    monitor = get_monitor()
+                except ImportError:
+                    monitor = None
+                
+                CHUNK_SIZE = 256 * 1024
+                for i in range(0, len(body), CHUNK_SIZE):
+                    chunk = body[i:i+CHUNK_SIZE]
+                    self.wfile.write(chunk)
+                    if monitor:
+                        monitor.record("download", len(chunk))
 
             def log_message(self, fmt: str, *args: Any) -> None:
                 pass  # suppress default access-log noise

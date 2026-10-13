@@ -11,14 +11,14 @@ run:
   config: llama3_15m           # Current dense comparison supports this model.
   hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
   dataset: c4                 # Supported: c4 or local c4_test.
-  steps: 500                   # Optimizer steps PER learner, PER method.
+  steps: 100000               # Optimizer steps PER learner, PER method. Under `stopping: time`, this must be large enough to not limit training prematurely.
                               # Whole-model baselines require steps % sync_steps == 0.
   seq_len: 512                # Training sequence length; positive integer.
   batch: 1                    # Training batch size per learner; positive integer.
   tokens_per_parameter: null   # Keep null: comparison requires fixed run.steps.
   seed: 42                    # Shared initialization/data seed.
-  data_distribution: iid      # Current comparison supports iid only.
-  languages: []               # Keep empty; language-specific non-IID is pending.
+  data_distribution: non_iid      # Current comparison supports iid or non_iid
+  languages: [en, fr, de, es]     # Language list for non-IID shards.
   island_slowness_factors: [1, 2, 3, 1]
                               # One factor per learner, each >= 1.
                               # 1: no added delay; 2/3: target 2x/3x step duration.
@@ -26,7 +26,7 @@ run:
   coordination_method: async  # Required by the current comparison.
   async_interval: 1           # Required baseline setting; keep 1.
   max_wait_time: 0.0          # Required baseline setting; keep 0.
-  sync_steps: 50              # Whole-model upload after each 20 local steps.
+  sync_steps: 20              # Whole-model upload after each 20 local steps.
                               # Applies to heloco/diloco/mla, not decoupled scheduling.
   num_fragments: 1            # Keep 1 here; new fragmentation is in decoupled below.
   outer_lr: 0.7               # Outer optimizer learning rate; finite >= 0.
@@ -64,13 +64,14 @@ decoupled:
   sync_interval: 1.0          # Positive seconds; round_robin admission spacing.
                               # Paper scheduling uses measured learner-step pace;
                               # this also supplies its fallback pace/timeout floor.
-  grace_window_factor: 0.8    # [0,1]; extra waiting after captured quorum is ready.
+  grace_window_factor: 0.0    # [0,1]; extra waiting after captured quorum is ready.
                               # 0=commit/freeze immediately when quorum is ready.
                               # adaptive=false: grace=sync_interval*factor.
 
-  stopping: syncer_steps       # Required for this mixed five-method comparison.
-                              # Alternative: syncer_steps, local_steps, decoupled-only runs.
-  syncer_steps: 1000          # Must be null with local_steps.
+  stopping: syncer_steps      # Options: local_steps, syncer_steps, time.
+  time_budget: null           # Wall-clock time budget in seconds (requires stopping: time).
+  syncer_steps: 50           # Must be null with local_steps or time.
+  scale_baselines_by_fragments: true # If true, normal baselines divide syncer_steps by num_fragments to match token counts. If false, they run the exact same number of syncs.
                               # Clock mode requires positive T and paper_offsets.
                               # T counts global schedule slots, not local steps/cycles.
   clock_lr_schedule: constant # Clock mode only: constant or local_horizon.
@@ -87,7 +88,7 @@ decoupled:
   fragment_offsets: [0,1,2,3]      # null resolves to [0,1,2,3] when H=4.
                               # Or one distinct integer per fragment in [0,H).
                               # round_robin requires both H/offset fields to be null.
-  min_local_steps: 5       # Minimum local work since applying this fragment.
+  min_local_steps: 10       # Minimum local work since applying this fragment.
                               # null => paper_offsets:1; round_robin:overlap_steps.
                               # Explicit positive integer overrides either default.
 
@@ -99,7 +100,7 @@ decoupled:
                               # Options: tokens_squared_per_step or tokens.
                               # Normalized weights proportional to tokens^2/steps
                               # or tokens, respectively; counters are per fragment.
-  adaptive_grace: true        # true: use measured remaining compute-overlap slack.
+  adaptive_grace: false        # true: use measured remaining compute-overlap slack.
                               # false: use the fixed interval*factor grace above.
   timing_ema_alpha: 0.2       # (0,1]; smoothing of timing estimates.
                               # Larger values react faster to recent measurements.

@@ -61,13 +61,7 @@ class FragmentSnapshot:
     base_revision: int
     local_steps: int
     tokens: int
-    baseline: Mapping[str, torch.Tensor]
-    current: Mapping[str, torch.Tensor]
-
-    def pseudo_gradient(self) -> dict[str, torch.Tensor]:
-        """Baseline minus captured local weights, in FP32 on CPU."""
-        return {name: self.baseline[name] - self.current[name] for name in self.baseline}
-
+    pseudo_gradient: Mapping[str, torch.Tensor]
 
 class FragmentState:
     """One state per learner/fragment; baselines are private CPU FP32 copies.
@@ -122,11 +116,11 @@ class FragmentState:
         """Capture at a safe step boundary without altering baseline/counters."""
         with self._lock:
             current = _cpu_copy(self.manager.select(self.fragment_id, parameters))
-            baseline = {name: tensor.clone() for name, tensor in self._baseline.items()}
+            pseudo_gradient = {name: self._baseline[name] - current[name] for name in self._baseline}
             return FragmentSnapshot(
                 self.fragment_id, self.manager.layout_signature,
                 self._last_applied_revision, self._local_steps, self._tokens,
-                MappingProxyType(baseline), MappingProxyType(current),
+                MappingProxyType(pseudo_gradient),
             )
 
     def queue_update(

@@ -1,3 +1,8 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+from panoengine.decentralized.patch_dataset import patch_torchtitan_c4
+patch_torchtitan_c4()
 """Fixed-budget learner using the original whole-model AsyncDiLoCo client."""
 
 import argparse
@@ -82,9 +87,21 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
             initial_hash = parameter_fingerprint(dict(model.named_parameters()))
             if client._baseline_revision != 0 or initial_hash != endpoint["initial_parameters_sha256"]:
                 raise RuntimeError("learner initial pull differs from the shared revision-0 model")
+            
+            # Pre-fetch the first batch to ensure dataset preparation (e.g. HuggingFace downloads)
+            # does not contaminate training step durations or artificial slowness pacing.
+            iterator = trainer.batch_generator(trainer.dataloader)
+            from itertools import chain
+            try:
+                first_batch = next(iterator)
+                iterator = chain([first_batch], iterator)
+            except StopIteration:
+                pass
+
             write_json(folder / "ready.json", {"learner_id": learner_id, "pid": os.getpid(),
                                                 "revision": 0, "initial_parameters_sha256": initial_hash})
-            wait_for_gate(run_dir / "start.json", deadline)
+            start_info = wait_for_gate(run_dir / "start.json", deadline)
+            training_deadline = start_info.get("training_deadline")
             client._window_start = time.monotonic()
             origin = time.monotonic()
             trajectory.origin = origin
@@ -94,9 +111,23 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
                 commits = csv.DictWriter(windows, fieldnames=("push", "local_step", "window_steps", "window_tokens", "base_revision", "received_revision", "exchange_s"))
                 steps.writeheader()
                 commits.writeheader()
-                while trainer.step < options.steps:
-                    if time.monotonic() >= deadline:
+                
+                clock_mode = config.decoupled.stopping == "syncer_steps"
+                syncer_steps = config.decoupled.syncer_steps if clock_mode else None
+                time_budget = config.decoupled.time_budget if config.decoupled.stopping == "time" else None
+                while True:
+                    now = time.monotonic()
+                    if now >= deadline:
                         raise TimeoutError("baseline learner exceeded its training deadline")
+                    if time_budget is not None and now - origin >= time_budget:
+                        break
+                    if clock_mode:
+                        target = syncer_steps // config.decoupled.num_fragments if config.decoupled.scale_baselines_by_fragments else syncer_steps
+                        if client._baseline_revision >= target:
+                            break
+                    if time_budget is None and not clock_mode and trainer.step >= options.steps:
+                        break
+                        
                     before = time.monotonic()
                     trainer.step += 1
                     record.clear()
@@ -137,10 +168,11 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
                     if time.monotonic() + delay >= deadline:
                         raise TimeoutError("baseline pacing would exceed the training deadline")
                     time.sleep(delay)
-            if client._local_step or window_tokens:
+            if time_budget is None and not clock_mode and (client._local_step or window_tokens):
                 raise RuntimeError("partial local window remains; the budget must be divisible by H")
             write_json(folder / "training-done.json", {"local_steps": trainer.step, "pushes": pushes,
                                                         "remaining_steps": client._local_step, "total_tokens": total_tokens})
+            torch.save(model.state_dict(), folder / "local_model.pt")
             final = wait_for_gate(run_dir / "finalize.json", deadline)
             client._pull_global()  # Pull-only: never adds an outer update.
             final_hash = parameter_fingerprint(dict(model.named_parameters()))

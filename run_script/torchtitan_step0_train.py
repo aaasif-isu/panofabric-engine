@@ -1,3 +1,8 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from panoengine.decentralized.patch_dataset import patch_torchtitan_c4
+patch_torchtitan_c4()
 """TorchTitan wrapper that logs the first pre-update loss as step 0."""
 
 import runpy

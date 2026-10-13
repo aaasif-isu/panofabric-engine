@@ -73,8 +73,10 @@ def validate_dense_options(options):
         raise ConfigError("Phase 7 supports one dense GPU per island; FSDP integration is pending")
     if (options.module, options.config) != ("models.llama3_small", "llama3_15m"):
         raise ConfigError("Phase 7 supports models.llama3_small / llama3_15m only")
-    if options.data_distribution != "iid" or options.languages:
-        raise ConfigError("Phase 7 supports IID data shards; language-specific shards are pending")
+    if options.data_distribution not in {"iid", "non_iid", "both"}:
+        raise ConfigError("data_distribution must be iid, non_iid, or both")
+    if options.data_distribution in {"non_iid", "both"} and not options.languages:
+        raise ConfigError("Phase 7 non-IID requires explicit language lists in run.languages")
     if options.dataset not in {"c4", "c4_test"}:
         raise ConfigError("Phase 7 supports c4 or the local c4_test dataset")
     if options.should_quantize or options.correction_heatmap or options.extra:

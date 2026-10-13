@@ -91,6 +91,8 @@ class DecoupledConfig:
     grace_window_factor: float = 0.8
     stopping: str = "local_steps"
     syncer_steps: int | None = None
+    time_budget: float | None = None
+    scale_baselines_by_fragments: bool = True
     clock_lr_schedule: str = "constant"
     scheduler: str = "round_robin"
     sync_period: int | None = None
@@ -131,14 +133,20 @@ class DecoupledConfig:
             raise ConfigError("decoupled.grace_window_factor must be in [0, 1]")
         if result.clock_lr_schedule not in {"constant", "local_horizon"}:
             raise ConfigError("decoupled.clock_lr_schedule must be constant or local_horizon")
-        if result.stopping not in {"local_steps", "syncer_steps"}:
-            raise ConfigError("decoupled.stopping must be local_steps or syncer_steps")
+        if result.stopping not in {"local_steps", "syncer_steps", "time"}:
+            raise ConfigError("decoupled.stopping must be local_steps, syncer_steps, or time")
         if result.stopping == "syncer_steps":
             _positive_int(result.syncer_steps, "decoupled.syncer_steps")
             if result.scheduler != "paper_offsets":
                 raise ConfigError("syncer_steps stopping requires paper_offsets scheduling")
         elif result.syncer_steps is not None:
             raise ConfigError("decoupled.syncer_steps requires stopping: syncer_steps")
+            
+        if result.stopping == "time":
+            if result.time_budget is None or result.time_budget <= 0:
+                raise ConfigError("time_budget must be a positive float when stopping is time")
+        elif result.time_budget is not None:
+            raise ConfigError("decoupled.time_budget requires stopping: time")
         if result.scheduler not in ("round_robin", "paper_offsets"):
             raise ConfigError("decoupled.scheduler must be round_robin or paper_offsets")
         if result.min_local_steps is not None:

@@ -156,7 +156,46 @@ class TrainingProcessTests(unittest.TestCase):
         return ExperimentConfig("decoupled_heloco", decoupled=DecoupledConfig(num_fragments=2, min_quorum=2, overlap_steps=2, sync_interval=0.1, grace_window_factor=0.2))
 
     def options(self):
-        return SimpleNamespace(islands=2, steps=12, outer_lr=0.7, outer_momentum=0.9, ps_timeout=30.0, island_slowness_factors=[1, 2])
+        return SimpleNamespace(islands=2, steps=12, outer_lr=0.7, outer_momentum=0.9, ps_timeout=30.0, island_slowness_factors=[1, 2], gpus_per_island=1, async_interval=1, max_wait_time=0.0, seq_len=512, batch=1, sync_steps=2, log_dir="logs", num_fragments=1, tokens_per_parameter=None, dataset="c4", rho=None, correction_workers="all", correction_scope="tensorwise", correction_heatmap=False, other_islands_method="heloco_uncorrected", diloco_lr=None, diloco_momentum=None, diloco_nesterov_period=None, coordination_method="async", data_distribution="iid", should_quantize=False, extra=[], module="models.llama3_small", config="llama3_15m", gpus=None, host="localhost")
+
+    def test_baseline_time_budget(self):
+        import copy
+        from panoengine.decentralized.decoupled_heloco.baseline_training import _run_baseline
+        config = self.config()
+        config = ExperimentConfig(
+            "heloco",
+            run=config.run,
+            decoupled=DecoupledConfig(stopping="time", time_budget=1.0, num_fragments=1, sync_interval=1.0),
+            monitoring=config.monitoring,
+        )
+        options = self.options()
+        options.steps = 100
+        options.sync_steps = 2
+        options.island_slowness_factors = [1, 2]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            start = time.monotonic()
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(output):
+                status = _run_baseline(config, options, _TinyTokenModel(2), ["0", "1"], folder, 20.0, ROOT, worker_command=[sys.executable, str(Path(__file__).with_name("cpu_baseline_worker.py"))])
+            duration = time.monotonic() - start
+            
+            self.assertEqual(status, 0, output.getvalue())
+            
+            summary = json.loads((folder / "summary.json").read_text())
+            self.assertEqual(summary["status"], "passed")
+            # workers should complete different numbers of steps and pushes
+            learners = summary["learners"]
+            self.assertEqual(len(learners), 2)
+            self.assertTrue(any(l["total_local_steps"] > 0 for l in learners))
+            
+            # Learner 0 is faster, so should have more steps
+            l0 = next(l for l in learners if l["learner_id"] == 0)
+            l1 = next(l for l in learners if l["learner_id"] == 1)
+            self.assertGreater(l0["total_local_steps"], l1["total_local_steps"])
+            
+            # total pushes matches summary expected revision
+            self.assertEqual(summary["sync_updates"], l0["pushes"] + l1["pushes"])
 
     def test_fixed_budgets_final_drain_logs_and_global_export_over_real_tcp(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -201,6 +240,34 @@ class TrainingProcessTests(unittest.TestCase):
             self.assertEqual(summary["status"], "failed")
             self.assertIn("startup", summary["error"])
             self.assertFalse((folder / "global_model.pt").exists())
+
+    def test_slow_first_batch_does_not_inflate_grace_or_sleep(self):
+        import copy
+        config = self.config()
+        new_decoupled = copy.copy(config.decoupled)
+        object.__setattr__(new_decoupled, "adaptive_grace", True)
+        config = ExperimentConfig(
+            config.method,
+            run=config.run,
+            decoupled=new_decoupled,
+            monitoring=config.monitoring,
+        )
+        options = self.options()
+        options.steps = 5
+        # Learner 1 has factor=2. If dataset took 2s, step 1 sleep would be 2*(2-1)=2s.
+        options.island_slowness_factors = [1, 2]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            start = time.monotonic()
+            with redirect_stdout(sys.stdout), redirect_stderr(sys.stderr):
+                status = _run_training(config, options, _TinyTokenModel(2), ["0", "1"], folder, 20.0, ROOT, worker_command=[sys.executable, str(Path(__file__).with_name("cpu_training_worker.py")), "--slow-first-batch", "2.0"])
+            duration = time.monotonic() - start
+            
+            self.assertEqual(status, 0)
+            
+            summary = json.loads((folder / "summary.json").read_text())
+            self.assertLess(summary["peak_inflight_captures"], 3)
+            self.assertLess(duration, 10.0)
 
 
 def math_isfinite(value):

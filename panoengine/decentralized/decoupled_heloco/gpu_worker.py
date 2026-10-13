@@ -1,3 +1,8 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+from panoengine.decentralized.patch_dataset import patch_torchtitan_c4
+patch_torchtitan_c4()
 """Single-rank GPU learner entry point; network work stays off training thread."""
 
 import argparse
@@ -60,6 +65,17 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
     learner = DecoupledLearner(model, config.decoupled.num_fragments, learner_id=learner_id,
                               stop_at_syncer_step=clock_target,
                               max_snapshot_requests=config.decoupled.max_inflight_captures)
+    
+    # Pre-fetch the first batch to ensure dataset preparation (e.g. HuggingFace downloads)
+    # does not contaminate training step durations or artificial slowness pacing.
+    iterator = trainer.batch_generator(trainer.dataloader)
+    from itertools import chain
+    try:
+        first_batch = next(iterator)
+        iterator = chain([first_batch], iterator)
+    except StopIteration:
+        pass
+
     transport.send("ready", {"pid": os.getpid(), "metadata": asdict(learner.metadata())})
     started, pause, parked, stop, finished, done = (threading.Event() for _ in range(6))
     failures = []
@@ -77,7 +93,6 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
     from .monitoring import Trajectory
     trajectory = Trajectory(Path(log_folder), config.monitoring, kind="learner")
     trajectory.clock_provider = lambda: learner.metadata().syncer_step
-    iterator = trainer.batch_generator(trainer.dataloader)
     factors = options.island_slowness_factors
     factor = factors[0] if len(factors) == 1 else factors[learner_id]
     origin = time.monotonic()
@@ -86,6 +101,7 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
         with (Path(log_folder) / "steps.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=("step", "elapsed_s", "step_s", "tokens", "total_tokens", "loss", "grad_norm", "applied_revisions", "syncer_step"))
             writer.writeheader()
+            time_budget = config.decoupled.time_budget if config.decoupled.stopping == "time" else None
             while not stop.is_set():
                 if not started.is_set() or pause.is_set() or done.is_set():
                     learner.boundary()
@@ -98,6 +114,9 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
                     done.set()
                     continue
                 before = time.monotonic()
+                if time_budget is not None and before - origin >= time_budget:
+                    done.set()
+                    continue
                 if trainer.step == 0:
                     trajectory.origin = before
                 trainer.step += 1
@@ -116,7 +135,7 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
                     raise RuntimeError("trainer did not report its per-step loss")
                 writer.writerow({"step": trainer.step, "elapsed_s": time.monotonic() - origin, "step_s": duration, "tokens": tokens, "total_tokens": metadata.total_tokens, **loss_record, "applied_revisions": json.dumps([f.last_applied_revision for f in metadata.fragments]), "syncer_step": metadata.syncer_step})
                 stream.flush()
-                local_done = clock_target is None and trainer.step >= options.steps
+                local_done = clock_target is None and time_budget is None and trainer.step >= options.steps
                 trajectory.save(trainer.step, dict(model.named_parameters()), tokens=metadata.total_tokens, force=local_done)
                 if local_done or (clock_target is not None and metadata.syncer_step >= clock_target):
                     done.set()
@@ -128,6 +147,7 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
         learner.boundary()
         if not failures:
             trajectory.save(trainer.step, dict(model.named_parameters()), tokens=learner.metadata().total_tokens, force=True, final=True)
+            torch.save(model.state_dict(), Path(log_folder) / "local_model.pt")
         finished.set()
         service.join(timeout=max(.001, deadline - time.monotonic()))
         (Path(log_folder) / "transport_diagnostics.json").write_text(json.dumps(transport.diagnostics(), indent=2))

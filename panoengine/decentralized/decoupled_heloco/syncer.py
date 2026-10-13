@@ -312,12 +312,11 @@ class DecoupledSyncer:
             raise ValueError("capture has insufficient local optimizer work")
         if type(snapshot.tokens) is not int or snapshot.tokens < 1:
             raise ValueError("capture must contain positive token work")
-        for values in (snapshot.baseline, snapshot.current):
-            self.manager.validate_update(plan.fragment_id, values)
-            for tensor in values.values():
-                _dense(tensor)
-                if not bool(torch.isfinite(tensor).all()):
-                    raise ValueError("capture contains nonfinite parameters")
+        self.manager.validate_update(plan.fragment_id, snapshot.pseudo_gradient)
+        for tensor in snapshot.pseudo_gradient.values():
+            _dense(tensor)
+            if not bool(torch.isfinite(tensor).all()):
+                raise ValueError("capture contains nonfinite parameters")
 
     def extend_sync(self, sync_step=None) -> tuple[int, ...]:
         """Add learners that become ready while the timed grace window is open."""
@@ -508,7 +507,7 @@ class DecoupledSyncer:
             merged = {}
             corrected_before_merge = self.outer_method == "heloco" and self.optimizer.config.correction_order == "correct_then_merge"
             for name in self.manager.fragment(plan.fragment_id).parameter_names:
-                gradients = (valid[i].baseline[name].detach().float().cpu() - valid[i].current[name].detach().float().cpu() for i in ids)
+                gradients = (valid[i].pseudo_gradient[name].detach().float().cpu() for i in ids)
                 if corrected_before_merge:
                     gradients = (self.optimizer.correct({name: gradient})[name] for gradient in gradients)
                 mode = self.merge

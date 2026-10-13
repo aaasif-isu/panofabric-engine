@@ -103,8 +103,8 @@ def _worker(rank, peers, connection, initialization, timeout, resource_path):
                         mode = merge
                         if mode == 'paper_rda':
                             mode = 'weighted_average' if {'embedding', 'tok_embeddings', 'embed_tokens'}.intersection(name.split('.')) else 'rda'
-                        for baseline, current, weight in contributions:
-                            gradient = baseline[name].float() - current[name].float()
+                        for pseudo_gradient, weight in contributions:
+                            gradient = pseudo_gradient[name].float()
                             if before:
                                 gradient = optimizer.correct({name: gradient})[name]
                             if not bool(torch.isfinite(gradient).all()):
@@ -244,7 +244,7 @@ class ShardedOptimizer:
         assignments = [[] for _ in range(self.shards)]
         for learner_id, weight in zip(ids, weights, strict=True):
             s = snapshots[learner_id]
-            assignments[learner_id % self.shards].append((dict(s.baseline), dict(s.current), weight))
+            assignments[learner_id % self.shards].append((dict(s.pseudo_gradient), weight))
         deadline = time.monotonic() + self.timeout
         try:
             for connection, contributions in zip(self._connections, assignments, strict=True):

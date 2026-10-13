@@ -21,7 +21,7 @@ from panoengine.decentralized.decoupled_heloco.transport import FramedTransport
 
 
 class CPUTrainer:
-    def __init__(self, fragments, *, fail_after=None):
+    def __init__(self, fragments, *, fail_after=None, slow_first_batch=0.0):
         self.model_parts = [_TinyTokenModel(fragments)]
         self.optimizer = torch.optim.SGD(self.model_parts[0].parameters(), lr=0.1, momentum=0.9)
         self.metrics_processor = SimpleNamespace(log=lambda *args, **kwargs: None)
@@ -29,9 +29,14 @@ class CPUTrainer:
         self.tokens = torch.arange(8).repeat(2, 1)
         self.dataloader = None
         self.fail_after = fail_after
+        self.slow_first_batch = slow_first_batch
+        self.first_yield = True
 
     def batch_generator(self, _):
         while True:
+            if self.first_yield and self.slow_first_batch > 0.0:
+                time.sleep(self.slow_first_batch)
+                self.first_yield = False
             yield {"input": self.tokens}, (self.tokens + 1) % 8
 
     def train_step(self, iterator):
@@ -106,6 +111,7 @@ def main():
     parser.add_argument("--capture-delay-fragment", type=int, default=0)
     parser.add_argument("--capture-delay-seconds", type=float, default=0.)
     parser.add_argument("--exit-delay-seconds", type=float, default=0.)
+    parser.add_argument("--slow-first-batch", type=float, default=0.0)
     args = parser.parse_args()
     torch.set_num_threads(1)
     config = load_config(args.run_dir / "experiment.yaml")
@@ -116,7 +122,7 @@ def main():
     try:
         transport.send("hello", {"learner_id": args.learner_id, "token": os.environ["DECOUPLED_RUN_TOKEN"]})
         fail_after = args.fail_after if args.learner_id == args.fail_learner else None
-        run_session(transport, CPUTrainer(config.decoupled.num_fragments, fail_after=fail_after), config, options, args.learner_id, args.run_dir / f"learner_{args.learner_id}", time.monotonic() + args.timeout)
+        run_session(transport, CPUTrainer(config.decoupled.num_fragments, fail_after=fail_after, slow_first_batch=args.slow_first_batch), config, options, args.learner_id, args.run_dir / f"learner_{args.learner_id}", time.monotonic() + args.timeout)
     finally:
         transport.close()
     # Exercise real teardown after the stopped ACK/socket closure.

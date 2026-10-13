@@ -64,7 +64,7 @@ def snapshot_to_wire(snapshot: FragmentSnapshot) -> dict:
     return {
         "fragment_id": snapshot.fragment_id, "layout_signature": snapshot.layout_signature,
         "base_revision": snapshot.base_revision, "local_steps": snapshot.local_steps,
-        "tokens": snapshot.tokens, "baseline": dict(snapshot.baseline), "current": dict(snapshot.current),
+        "tokens": snapshot.tokens, "pseudo_gradient": dict(snapshot.pseudo_gradient),
     }
 
 
@@ -211,14 +211,22 @@ class FramedTransport:
             return None
 
     def _read_exact(self, size):
+        try:
+            from panoengine.decentralized.bandwidth import get_monitor
+            monitor = get_monitor()
+        except ImportError:
+            monitor = None
         data = bytearray()
         while len(data) < size and not self._closed.is_set():
             try:
-                chunk = self.socket.recv(size - len(data))
+                chunk_size = min(size - len(data), 256 * 1024)
+                chunk = self.socket.recv(chunk_size)
             except socket.timeout:
                 continue
             if not chunk:
                 raise EOFError("peer disconnected")
+            if monitor:
+                monitor.record("upload", len(chunk))
             data.extend(chunk)
         if len(data) != size:
             raise EOFError("transport closed during a frame")
@@ -244,6 +252,11 @@ class FramedTransport:
 
     def _writer(self):
         try:
+            from panoengine.decentralized.bandwidth import get_monitor
+            monitor = get_monitor()
+        except ImportError:
+            monitor = None
+        try:
             while not self._closed.is_set():
                 try:
                     kind, body = self._outgoing.get(timeout=0.1)
@@ -257,11 +270,14 @@ class FramedTransport:
                     frame = memoryview(struct.pack("!I", len(payload)) + payload)
                     while frame and not self._closed.is_set():
                         try:
-                            sent = self.socket.send(frame)
+                            chunk_size = min(len(frame), 256 * 1024)
+                            sent = self.socket.send(frame[:chunk_size])
                         except socket.timeout:
                             continue
                         if not sent:
                             raise EOFError("peer disconnected while sending")
+                        if monitor:
+                            monitor.record("download", sent)
                         frame = frame[sent:]
                     self._stats["send_seconds"] += time.monotonic() - started
                     self.sent_bytes += 4 + len(payload)
@@ -354,7 +370,7 @@ class RemoteLearner:
         self._requests[request_id] = future
         self._request_arguments[request_id] = arguments
         try:
-            self.transport.send_reliable("pull", {"request_id": request_id, "fragment_id": fragment_id, "expected_revision": expected_revision, "min_local_steps": min_local_steps}, deadline=self.deadline, progress=self.pump)
+            self.transport.send("pull", {"request_id": request_id, "fragment_id": fragment_id, "expected_revision": expected_revision, "min_local_steps": min_local_steps})
         except Exception:
             self._requests.pop(request_id, None)
             self._request_arguments.pop(request_id, None)
@@ -368,7 +384,7 @@ class RemoteLearner:
             if not future.done():
                 future.cancel()
             if self.available:
-                self.transport.send_reliable("release", {"request_id": request_id}, deadline=self.deadline, progress=self.pump)
+                self.transport.send("release", {"request_id": request_id})
         return future is not None
 
     def queue_update(self, fragment_id, parameters: Mapping[str, torch.Tensor], revision, *, layout_signature, global_step=0):
@@ -379,7 +395,7 @@ class RemoteLearner:
             self._updates.discard(key)
             return False
         if key not in self._updates:
-            self.transport.send_reliable("update", {"fragment_id": fragment_id, "revision": revision, "layout_signature": layout_signature, "parameters": dict(parameters), "global_step": global_step}, deadline=self.deadline, progress=self.pump)
+            self.transport.send("update", {"fragment_id": fragment_id, "revision": revision, "layout_signature": layout_signature, "parameters": dict(parameters), "global_step": global_step})
             self._updates.add(key)
         return False  # The syncer retains its outbox until an ACK report arrives.
 

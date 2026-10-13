@@ -147,6 +147,11 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
         monitor = CentralMonitor(folder, config.monitoring)
         attach_baseline(server, model, monitor)
         monitor.trajectory.save(0, dict(model.named_parameters()), force=True)
+        
+        from panoengine.decentralized.bandwidth import BandwidthMonitor, set_monitor
+        bw_monitor = BandwidthMonitor(folder, config.method)
+        set_monitor(bw_monitor)
+        
         write_json(folder / "server.json", {"address": server.address(), "heartbeat_address": server.heartbeat_address(),
                                              "initial_parameters_sha256": initial_hash})
         used_ports = set()
@@ -167,6 +172,9 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
                            PYTHONUNBUFFERED="1", OMP_NUM_THREADS="1", PF_ISLAND_ID=str(learner_id),
                            PF_WIRE_BF16="0", PF_ISLAND_SLOWNESS_FACTOR="1", PANOFABRIC_METHOD=config.method,
                            PANOFABRIC_COMM_LOG_DIR=str(child / "communication"))
+            dist_mode = getattr(options, "data_distribution", "iid")
+            if dist_mode in ("non_iid", "both") and getattr(options, "languages", []):
+                env["ISLAND_LANGUAGE"] = options.languages[learner_id % len(options.languages)]
             # Loopback HTTP must bypass any cluster proxy.
             for name in ("NO_PROXY", "no_proxy"):
                 env[name] = env.get(name, "") + ",localhost,127.0.0.1"
@@ -197,14 +205,22 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
         monitor.trajectory.origin = started
         print(f"Matched GPU training started: method={config.method}, server_pid={os.getpid()}, learner_pids={[p.pid for p in processes]}", flush=True)
         print(f"Logs: {folder}", flush=True)
-        write_json(folder / "start.json", {"start": True})
+        write_json(folder / "start.json", {"start": True, "training_deadline": started + config.decoupled.time_budget if config.decoupled.stopping == "time" else None})
         completed = wait_for_files("training-done.json", deadline)
         expected_pushes = options.steps // options.sync_steps
-        if any(row.get("local_steps") != options.steps or row.get("pushes") != expected_pushes or row.get("remaining_steps") != 0
-               for row in completed):
-            raise RuntimeError("baseline local budget or window accounting differs from the configured run")
+        if config.decoupled.stopping == "local_steps":
+            if any(row.get("local_steps") != options.steps or row.get("pushes") != expected_pushes or row.get("remaining_steps") != 0
+                   for row in completed):
+                raise RuntimeError("baseline local budget or window accounting differs from the configured run")
+        
+        try:
+            from panoengine.decentralized.bandwidth import get_monitor
+            get_monitor().set_phase("finalization")
+        except ImportError:
+            pass
+            
         status = server.status()
-        expected_revision = expected_pushes * options.islands
+        expected_revision = sum(row.get("pushes", 0) for row in completed)
         if status["applied_pushes"] != expected_revision or status["revision"] != expected_revision:
             raise RuntimeError("not every completed local window was committed exactly once")
         with server._lock:
@@ -218,11 +234,18 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
         from .shutdown import wait_for_learner_shutdown
         wait_for_learner_shutdown(dict(enumerate(processes)), deadline, folder)
         for learner_id, row in enumerate(learners):
-            if (row.get("learner_id") != learner_id or row.get("total_local_steps") != options.steps
-                    or row.get("pushes") != expected_pushes or row.get("final_dispatch_sha256") != dispatch_hash
-                    or row.get("fragments") != [{"fragment_id": 0, "local_steps": 0, "tokens": 0,
-                                                 "last_received_revision": expected_revision, "last_applied_revision": expected_revision}]):
-                raise RuntimeError("baseline learner final revision, dispatch or budget verification failed")
+            if config.decoupled.stopping == "local_steps":
+                if (row.get("learner_id") != learner_id or row.get("total_local_steps") != options.steps
+                        or row.get("pushes") != expected_pushes or row.get("final_dispatch_sha256") != dispatch_hash
+                        or row.get("fragments") != [{"fragment_id": 0, "local_steps": 0, "tokens": 0,
+                                                     "last_received_revision": expected_revision, "last_applied_revision": expected_revision}]):
+                    raise RuntimeError("baseline learner final revision, dispatch or budget verification failed")
+            else:
+                if (row.get("learner_id") != learner_id
+                        or row.get("final_dispatch_sha256") != dispatch_hash
+                        or row.get("fragments") != [{"fragment_id": 0, "local_steps": 0, "tokens": 0,
+                                                     "last_received_revision": expected_revision, "last_applied_revision": expected_revision}]):
+                    raise RuntimeError("baseline learner final revision or dispatch verification failed")
         if server.status()["revision"] != expected_revision or server.status()["finished_count"] != options.islands:
             raise RuntimeError("baseline server changed after final pull or a learner did not announce clean completion")
         monitor.trajectory.save(expected_revision, parameters, tokens=sum(r["total_tokens"] for r in learners), force=True)
@@ -258,6 +281,11 @@ def _run_baseline(config, options, model, devices, folder, timeout, repo_root, *
             server.shutdown()
         if monitor is not None:
             monitor.close()
+        try:
+            if 'bw_monitor' in locals() and bw_monitor is not None:
+                bw_monitor.close()
+        except NameError:
+            pass
         for log in logs:
             log.close()
         write_json(folder / "summary.json", manifest)

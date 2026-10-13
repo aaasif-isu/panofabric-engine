@@ -131,13 +131,15 @@ def _pump_until(peers, processes, deadline, predicate, *, min_quorum=None):
     raise TimeoutError("GPU run exceeded --training-timeout; inspect learner logs or increase the deadline")
 
 
-def _send_available(peers, kind):
+def _send_available(peers, kind, body=None):
     """Isolate disconnects that race with start/pause/stop control messages."""
+    if body is None:
+        body = {}
     for peer in peers:
         if not peer.available:
             continue
         try:
-            peer.transport.send_reliable(kind, {}, deadline=peer.deadline, progress=lambda: [p.pump() for p in peers])
+            peer.transport.send_reliable(kind, body, deadline=peer.deadline, progress=lambda: [p.pump() for p in peers])
         except (ConnectionError, OSError) as exc:
             peer.mark_unavailable(exc)
 
@@ -191,6 +193,10 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
     syncer = None
     monitor = None
     try:
+        from panoengine.decentralized.bandwidth import BandwidthMonitor, set_monitor
+        bw_monitor = BandwidthMonitor(folder, config.method)
+        set_monitor(bw_monitor)
+        
         manager = validate_frame_sizes(model, config.decoupled.num_fragments)
         initial = _cpu_copy(dict(model.named_parameters()))
         used_ports = set()
@@ -211,6 +217,9 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
                 rank_port = reservation.getsockname()[1]
             used_ports.add(rank_port)
             env = dict(os.environ, CUDA_VISIBLE_DEVICES=device, RANK="0", LOCAL_RANK="0", WORLD_SIZE="1", LOCAL_WORLD_SIZE="1", MASTER_ADDR="127.0.0.1", MASTER_PORT=str(rank_port), DECOUPLED_RUN_TOKEN=token, PYTHONUNBUFFERED="1", OMP_NUM_THREADS="1")
+            dist_mode = getattr(options, "data_distribution", "iid")
+            if dist_mode in ("non_iid", "both") and getattr(options, "languages", []):
+                env["ISLAND_LANGUAGE"] = options.languages[learner_id % len(options.languages)]
             for name in ("DILOCO_SERVER_ADDR", "DILOCO_HB_ADDR", "TORCHFT_LIGHTHOUSE"):
                 env.pop(name, None)
             command = [*(worker_command or [sys.executable, "-m", "panoengine.decentralized.decoupled_heloco.gpu_worker"]), "--run-dir", str(folder), "--learner-id", str(learner_id), "--port", str(listener.getsockname()[1]), "--timeout", str(timeout)]
@@ -265,8 +274,9 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
         print(f"GPU training started: syncer_pid={os.getpid()}, learner_pids={[p.pid for p in peers]}", flush=True)
         print(f"Logs: {folder}", flush=True)
         started = time.monotonic()
+        training_deadline = started + d.time_budget if d.stopping == "time" else None
         monitor.trajectory.origin = started
-        _send_available(peers, "start")
+        _send_available(peers, "start", {"training_deadline": training_deadline})
         with (folder / "syncs.csv").open("w", newline="", encoding="utf-8") as stream, (folder / "capture_events.csv").open("w", newline="", encoding="utf-8") as capture_stream:
             writer = csv.DictWriter(stream, fieldnames=("elapsed_s", "sync_step", "global_step", "fragment_id", "fragment_revision", "learner_ids", "local_steps", "tokens", "weights"))
             writer.writeheader()
@@ -281,6 +291,10 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
 
             def synchronize():
                 clock_mode = d.stopping == "syncer_steps"
+                time_mode = d.stopping == "time"
+                now = time.monotonic()
+                if time_mode and now >= training_deadline:
+                    controller.max_global_step = syncer.scheduler.global_step
                 if clock_mode and syncer.scheduler.global_step > d.syncer_steps:
                     # No captures beyond T. Apply all committed revisions before
                     # announcing an idle terminal slot (e.g. sparse offsets).
@@ -307,9 +321,18 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
                     writer.writerow({"elapsed_s": time.monotonic() - started, **{key: json.dumps(row[key]) if isinstance(row[key], tuple) else row[key] for key in writer.fieldnames if key != "elapsed_s"}})
                     stream.flush()
                     print(f"sync={result.sync_step} global_step={result.global_step} fragment={result.fragment_id} revision={result.fragment_revision} learners={list(result.learner_ids)} tokens={list(result.tokens)}", flush=True)
+                if time_mode:
+                    return now >= training_deadline and drain_complete(syncer, peers)
                 return False if clock_mode else drain_complete(syncer, peers)
 
             _pump_until(peers, processes, deadline, synchronize, min_quorum=d.min_quorum)
+        
+        try:
+            from panoengine.decentralized.bandwidth import get_monitor
+            get_monitor().set_phase("finalization")
+        except ImportError:
+            pass
+
         _send_available(peers, "pause")
         _pump_until(peers, processes, deadline, lambda: all(peer.paused for peer in peers if peer.available), min_quorum=d.min_quorum)
         if not delivered(syncer, peers):
@@ -372,6 +395,11 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
                 process.wait(timeout=2.0)
         if monitor is not None:
             monitor.close()
+        try:
+            if 'bw_monitor' in locals() and bw_monitor is not None:
+                bw_monitor.close()
+        except NameError:
+            pass
         for log in logs:
             log.close()
         (folder / "summary.json").write_text(json.dumps(manifest, indent=2))
