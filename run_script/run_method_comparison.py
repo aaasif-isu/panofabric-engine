@@ -362,6 +362,30 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
                 "config_sha256": comparison["source_sha256"], "runs": {},
                 "evaluation_enabled": comparison["evaluation"]["enabled"], "output_dir": str(folder)}
     print(f"Comparison output: {folder}", flush=True)
+    # --- OFFLINE DATA PREPARATION ---
+    print("\nPreparing offline training caches...", flush=True)
+    first_method = comparison["configs"][0].method
+    first_effective = configs_dir / f"{first_method}.yaml"
+    first_effective.write_text(yaml.safe_dump(asdict(comparison["configs"][0]), sort_keys=False))
+    train_cache_dir = folder / "train_caches"
+    opt0 = comparison["options"][0]
+    languages_args = []
+    if getattr(opt0, "data_distribution", "iid") in ("non_iid", "both") and getattr(opt0, "languages", []):
+        languages_args = ["--languages", *opt0.languages]
+
+    train_cmd = [
+        sys.executable, str(SCRIPT_DIR / "prepare_training_caches.py"),
+        "--config-file", str(first_effective),
+        "--batches", "5000",
+        "--output-dir", str(train_cache_dir)
+    ]
+    proc = subprocess.run(train_cmd, cwd=repo_root, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ConfigError(f"Failed to prepare training caches:\n{proc.stderr}\n{proc.stdout}")
+    print(proc.stdout.strip(), flush=True)
+    os.environ["OFFLINE_TRAIN_CACHE_DIR"] = str(train_cache_dir)
+    os.environ["TRITON_CACHE_DIR"] = str((folder / "triton_cache").resolve())
+    # --------------------------------
     started = time.monotonic()
     try:
         initial_sha = None
@@ -396,7 +420,7 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
             write_json(folder / "comparison.json", manifest)
             
             try:
-                import subprocess
+                pass
                 print(f"Generating individual bandwidth figures for {method}...", flush=True)
                 subprocess.run([sys.executable, str(Path(repo_root) / "panoengine" / "decentralized" / "plot_bandwidth.py"), "--dir", str(run_dir)], check=False)
             except Exception as e:
@@ -424,7 +448,7 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
             if is_non_iid and cache_path is None:
                 cache_path = folder / "multilingual_cache.pt"
                 print(f"\nPreparing balanced multilingual validation cache ({evaluation['batches']} batches)...", flush=True)
-                import subprocess
+                pass
                 prep_cmd = [
                     sys.executable, str(SCRIPT_DIR / "prepare_multilingual_cache.py"),
                     "--run-dir", str(manifest["runs"][comparison["methods"][0]]["folder"]),
@@ -461,6 +485,7 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
                 writer.writerows(rows)
             manifest.update(status="passed", evaluation=report, results=rows)
             
+
             print("\n=====================================================================================================")
             print("1. OVERALL GLOBAL EVALUATION SUMMARY")
             print("=====================================================================================================")
@@ -482,13 +507,27 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
 
                 # 2. Per-language global evaluation
                 manifest["evaluation_per_language"] = {}
-                import subprocess
+                pass
                 all_lang_rows = []
                 for lang in unique_languages:
                     lang_eval_dir = folder / f"evaluation_{lang}"
                     lang_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_decoupled_heloco.py"), "--run-dirs",
                                 *[manifest["runs"][m]["folder"] for m in comparison["methods"]],
                                 "--batches", str(evaluation["batches"]), "--device", evaluation["device"], "--output-dir", str(lang_eval_dir)]
+                    lang_cache_path = folder / f"validation_cache_{lang}.pt"
+                    if not lang_cache_path.is_file():
+                        prep_cmd = [
+                            sys.executable, str(SCRIPT_DIR / "prepare_multilingual_cache.py"),
+                            "--run-dir", str(Path(manifest["runs"][comparison["methods"][0]]["folder"])),
+                            "--languages", lang,
+                            "--batches", str(evaluation["batches"]),
+                            "--output", str(lang_cache_path)
+                        ]
+                        proc_prep = subprocess.run(prep_cmd, cwd=repo_root, capture_output=True, text=True)
+                        if proc_prep.returncode != 0:
+                            print(f"Warning: Failed to prepare {lang} validation cache:\n{proc_prep.stderr}")
+                    if lang_cache_path.is_file():
+                        lang_cmd += ["--validation-cache", str(lang_cache_path)]
                     print(f"Evaluating global models on language '{lang}'...", flush=True)
                     env = dict(os.environ, ISLAND_LANGUAGE=lang)
                     with open(folder / f"evaluation_{lang}.log", "w") as log_f:
@@ -523,52 +562,56 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
                     print(f"Metrics saved to: {folder} / comparison_<lang>.csv\n", flush=True)
 
                 # 3. Per-learner local evaluation
-                print("Evaluating each learner's local model on its assigned language...", flush=True)
-                manifest["evaluation_local"] = {}
-                local_results = []
-                for method in comparison["methods"]:
-                    run_dir = Path(manifest["runs"][method]["folder"])
-                    manifest["evaluation_local"][method] = {}
-                    for i, lang in enumerate(assigned_languages):
-                        local_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_local.py"),
-                                     "--run-dir", str(run_dir), "--learner-id", str(i),
-                                     "--language", lang, "--batches", str(evaluation["batches"]),
-                                     "--device", evaluation["device"]]
-                        proc = subprocess.run(local_cmd, cwd=repo_root, env=os.environ, capture_output=True, text=True)
-                        if proc.returncode != 0:
-                            print(f"Warning: Local evaluation failed for {method} learner {i}:\n{proc.stderr}")
-                            continue
-
-                        try:
-                            res = json.loads(proc.stdout.strip().split('\n')[-1])
-                            manifest["evaluation_local"][method][f"learner_{i}"] = res
-                            local_results.append({
-                                "method": method,
-                                "learner_id": i,
-                                "language": lang,
-                                "loss": res["loss"],
-                                "perplexity": res["perplexity"],
-                                "next_token_accuracy": res["next_token_accuracy"]
-                            })
-                        except Exception as e:
-                            print(f"Warning: Could not parse local eval for {method} learner {i}: {e}\nOutput: {proc.stdout}")
-
-                if local_results:
-                    print("\n=====================================================================================================")
-                    print("3. LANGUAGE-WISE LOCAL EVALUATION SUMMARY")
-                    print("=====================================================================================================")
-                    print(f"{'Method':<20} | {'Learner':<8} | {'Lang':<5} | {'Loss':<10} | {'Perplexity':<12} | {'Accuracy':<10}")
-                    print("-" * 80)
-                    for r in local_results:
-                        print(f"{r['method']:<20} | {r['learner_id']:<8} | {r['language']:<5} | {r['loss']:<10.4f} | {r['perplexity']:<12.4f} | {r['next_token_accuracy']:<10.4f}")
-                    print("-" * 80)
-                    print(f"Local metrics saved to: {folder / 'comparison_local.csv'}\n", flush=True)
-
-                local_fields = ("method", "learner_id", "language", "loss", "perplexity", "next_token_accuracy")
-                with (folder / "comparison_local.csv").open("w", newline="") as stream:
-                    writer = csv.DictWriter(stream, fieldnames=local_fields)
-                    writer.writeheader()
-                    writer.writerows(local_results)
+                pass
+                # print("Evaluating each learner's local model on its assigned language...", flush=True)
+                # manifest["evaluation_local"] = {}
+                # local_results = []
+                # for method in comparison["methods"]:
+                #     run_dir = Path(manifest["runs"][method]["folder"])
+                #     manifest["evaluation_local"][method] = {}
+                #     for i, lang in enumerate(assigned_languages):
+                #         local_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_local.py"),
+                #                      "--run-dir", str(run_dir), "--learner-id", str(i),
+                #                      "--language", lang, "--batches", str(evaluation["batches"]),
+                #                      "--device", evaluation["device"]]
+                #         lang_cache_path = folder / f"validation_cache_{lang}.pt"
+                #         if lang_cache_path.is_file():
+                #             local_cmd += ["--validation-cache", str(lang_cache_path)]
+                #         proc = subprocess.run(local_cmd, cwd=repo_root, env=os.environ, capture_output=True, text=True)
+                #         if proc.returncode != 0:
+                #             print(f"Warning: Local evaluation failed for {method} learner {i}:\n{proc.stderr}")
+                #             continue
+                # 
+                #         try:
+                #             res = json.loads(proc.stdout.strip().split('\n')[-1])
+                #             manifest["evaluation_local"][method][f"learner_{i}"] = res
+                #             local_results.append({
+                #                 "method": method,
+                #                 "learner_id": i,
+                #                 "language": lang,
+                #                 "loss": res["loss"],
+                #                 "perplexity": res["perplexity"],
+                #                 "next_token_accuracy": res["next_token_accuracy"]
+                #             })
+                #         except Exception as e:
+                #             print(f"Warning: Could not parse local eval for {method} learner {i}: {e}\nOutput: {proc.stdout}")
+                # 
+                # if local_results:
+                #     print("\n=====================================================================================================")
+                #     print("3. LANGUAGE-WISE LOCAL EVALUATION SUMMARY")
+                #     print("=====================================================================================================")
+                #     print(f"{'Method':<20} | {'Learner':<8} | {'Lang':<5} | {'Loss':<10} | {'Perplexity':<12} | {'Accuracy':<10}")
+                #     print("-" * 80)
+                #     for r in local_results:
+                #         print(f"{r['method']:<20} | {r['learner_id']:<8} | {r['language']:<5} | {r['loss']:<10.4f} | {r['perplexity']:<12.4f} | {r['next_token_accuracy']:<10.4f}")
+                #     print("-" * 80)
+                #     print(f"Local metrics saved to: {folder / 'comparison_local.csv'}\n", flush=True)
+                # 
+                # local_fields = ("method", "learner_id", "language", "loss", "perplexity", "next_token_accuracy")
+                # with (folder / "comparison_local.csv").open("w", newline="") as stream:
+                #     writer = csv.DictWriter(stream, fieldnames=local_fields)
+                #     writer.writeheader()
+                #     writer.writerows(local_results)
 
             write_json(folder / "comparison.json", manifest)
             # --- END NON-IID EVALUATIONS ---
@@ -581,7 +624,7 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
         generate_memory_plot(folder, manifest.get("runs", {}))
         
         try:
-            import subprocess
+            pass
             print("Generating bandwidth comparison figures...", flush=True)
             subprocess.run([sys.executable, str(Path(repo_root) / "panoengine" / "decentralized" / "plot_bandwidth.py"), "--dir", str(folder), "--comparison"], check=False)
         except Exception as e:

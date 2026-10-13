@@ -171,6 +171,7 @@ def main(argv=None):
         from torchtitan.trainer import Trainer
         from .gpu_recipe import build_recipe
 
+        os.environ["LEARNER_ID"] = str(args.learner_id)
         init_logger()
         if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
             raise RuntimeError("GPU learner must see exactly one CUDA device")

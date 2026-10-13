@@ -21,6 +21,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--learner-id", type=int, required=True)
+    parser.add_argument("--validation-cache", type=Path, default=None)
     parser.add_argument("--language", type=str, required=True)
     parser.add_argument("--batches", type=int, default=100)
     parser.add_argument("--device", default="cuda:0")
@@ -59,10 +60,15 @@ def main(argv=None):
     model.to(args.device)
 
     # Build loader
-    loader_config = HuggingFaceTextDataLoader.Config(dataset="c4_validation", infinite=False, num_workers=0)
-    loader = loader_config.build(dp_world_size=1, dp_rank=0, tokenizer=tokenizer,
-                                 seq_len=options.seq_len, local_batch_size=options.batch)
-    frozen = freeze_batches(loader, args.batches, seq_len=options.seq_len, batch_size=options.batch, vocab_size=vocab_size)
+    if getattr(args, "validation_cache", None) is not None and args.validation_cache.is_file():
+        cache = torch.load(args.validation_cache, map_location="cpu", weights_only=True)
+        from panoengine.decentralized.decoupled_heloco.evaluation import load_validation_cache
+        frozen = load_validation_cache(cache, cache["metadata"], vocab_size=vocab_size)
+    else:
+        loader_config = HuggingFaceTextDataLoader.Config(dataset="c4_validation", infinite=False, num_workers=0)
+        loader = loader_config.build(dp_world_size=1, dp_rank=0, tokenizer=tokenizer,
+                                     seq_len=options.seq_len, local_batch_size=options.batch)
+        frozen = freeze_batches(loader, args.batches, seq_len=options.seq_len, batch_size=options.batch, vocab_size=vocab_size)
     
     metrics = evaluate_model(model, frozen, device=torch.device(args.device), vocab_size=vocab_size)
     loss = metrics["loss"]

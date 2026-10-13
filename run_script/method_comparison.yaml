@@ -1,7 +1,7 @@
 # Train sequentially, then evaluate on the same frozen held-out batches.
 # Choose any nonempty subset of these five names; duplicates are rejected.
-#method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
-method_run: [decoupled_heloco, decoupled_diloco]
+method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
+#method_run: [decoupled_heloco, decoupled_diloco]
 
 run:
   islands: 4                   # Independent learners; one learner per GPU here.
@@ -70,7 +70,7 @@ decoupled:
 
   stopping: syncer_steps      # Options: local_steps, syncer_steps, time.
   time_budget: null           # Wall-clock time budget in seconds (requires stopping: time).
-  syncer_steps: 50           # Must be null with local_steps or time.
+  syncer_steps: 100           # Must be null with local_steps or time.
   scale_baselines_by_fragments: true # If true, normal baselines divide syncer_steps by num_fragments to match token counts. If false, they run the exact same number of syncs.
                               # Clock mode requires positive T and paper_offsets.
                               # T counts global schedule slots, not local steps/cycles.
@@ -88,7 +88,7 @@ decoupled:
   fragment_offsets: [0,1,2,3]      # null resolves to [0,1,2,3] when H=4.
                               # Or one distinct integer per fragment in [0,H).
                               # round_robin requires both H/offset fields to be null.
-  min_local_steps: 10       # Minimum local work since applying this fragment.
+  min_local_steps: 5       # Minimum local work since applying this fragment.
                               # null => paper_offsets:1; round_robin:overlap_steps.
                               # Explicit positive integer overrides either default.
 
@@ -131,7 +131,7 @@ evaluation:
   timeout: 900.0             # Positive evaluation timeout in seconds.
 
 monitoring:
-  enabled: false              # true/false; trajectories and measured CPU resources.
+  enabled: true              # true/false; trajectories and measured CPU resources.
   global_every_updates: 10    # Export global snapshot every N committed outer updates.
                               # N>=1; 1 records every update and adds snapshot IO.
   learner_every_steps: 100    # Export each learner snapshot every N local steps; N>=1.
