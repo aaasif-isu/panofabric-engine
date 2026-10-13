@@ -131,7 +131,7 @@ evaluation:
   timeout: 900.0             # Positive evaluation timeout in seconds.
 
 monitoring:
-  enabled: true              # true/false; trajectories and measured CPU resources.
+  enabled: false              # true/false; trajectories and measured CPU resources.
   global_every_updates: 10    # Export global snapshot every N committed outer updates.
                               # N>=1; 1 records every update and adds snapshot IO.
   learner_every_steps: 100    # Export each learner snapshot every N local steps; N>=1.

@@ -172,6 +172,7 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
                 raise RuntimeError("partial local window remains; the budget must be divisible by H")
             write_json(folder / "training-done.json", {"local_steps": trainer.step, "pushes": pushes,
                                                         "remaining_steps": client._local_step, "total_tokens": total_tokens})
+            trajectory.save(trainer.step, dict(model.named_parameters()), tokens=total_tokens, force=True, final=True)
             torch.save(model.state_dict(), folder / "local_model.pt")
             final = wait_for_gate(run_dir / "finalize.json", deadline)
             client._pull_global()  # Pull-only: never adds an outer update.
