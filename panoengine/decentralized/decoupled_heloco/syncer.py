@@ -34,7 +34,7 @@ class LearnerEndpoint(Protocol):
     def metadata(self) -> LearnerMetadata: ...
     def request_snapshot(self, request_id: str, fragment_id: int, expected_revision: int, *, min_local_steps: int = 1) -> Future[FragmentSnapshot]: ...
     def release_snapshot(self, request_id: str) -> bool: ...
-    def queue_update(self, fragment_id: int, parameters: Mapping[str, torch.Tensor], revision: int, *, layout_signature: str, global_step: int = 0) -> bool: ...
+    def queue_update(self, fragment_id: int, parameters: Mapping[str, torch.Tensor], revision: int, *, layout_signature: str, global_step: int = 0, acked_request_id: str | None = None) -> bool: ...
 
 
 class SyncQuorumLost(RuntimeError):
@@ -128,6 +128,7 @@ class DecoupledSyncer:
             raise ValueError("registered learner count is smaller than min_quorum")
         self._revisions = [0] * num_fragments
         self._fragment_steps = [0] * num_fragments
+        self._last_accepted: dict[int, dict[int, str]] = {f: {} for f in range(num_fragments)}
         self.global_step = 0
         self._request_sequence = 0
         if type(max_inflight_captures) is not int or not 1 <= max_inflight_captures <= num_fragments:
@@ -441,9 +442,10 @@ class DecoupledSyncer:
                 if not getattr(learner, "available", True):
                     continue
                 try:
+                    acked_request_id = self._last_accepted[fragment_id].get(learner_id)
                     accepted = learner.queue_update(
                         broadcast.fragment_id, broadcast.parameters, broadcast.revision,
-                        layout_signature=self.manager.layout_signature, global_step=broadcast.global_step,
+                        layout_signature=self.manager.layout_signature, global_step=broadcast.global_step, acked_request_id=acked_request_id
                     )
                     received = learner.metadata().fragments[broadcast.fragment_id].last_server_revision
                     if not accepted and received < broadcast.revision:
@@ -527,6 +529,10 @@ class DecoupledSyncer:
                 raise
         self._revisions[plan.fragment_id] += 1
         revision = self._revisions[plan.fragment_id]
+        
+        for i in ids:
+            self._last_accepted[plan.fragment_id][i] = attempt.request_ids[i]
+            
         self.scheduler.commit(plan)
         self.global_step = plan.global_step
         self._fragment_steps[plan.fragment_id] = plan.global_step

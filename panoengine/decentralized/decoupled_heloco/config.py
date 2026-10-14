@@ -103,6 +103,8 @@ class DecoupledConfig:
     adaptive_grace: bool = True
     timing_ema_alpha: float = 0.2
     heloco: HeLoCoConfig = field(default_factory=HeLoCoConfig)
+    rebase: bool = False
+    ledger: bool = False
 
     @property
     def capture_min_steps(self):
@@ -165,6 +167,12 @@ class DecoupledConfig:
             raise ConfigError("decoupled.weighting must be tokens or tokens_squared_per_step")
         if type(result.adaptive_grace) is not bool:
             raise ConfigError("decoupled.adaptive_grace must be true or false")
+        if type(result.rebase) is not bool:
+            raise ConfigError("decoupled.rebase must be true or false")
+        if type(result.ledger) is not bool:
+            raise ConfigError("decoupled.ledger must be true or false")
+        if result.ledger and not result.rebase:
+            raise ConfigError("decoupled.ledger requires decoupled.rebase")
         _finite_number(result.timing_ema_alpha, "decoupled.timing_ema_alpha")
         if not 0 < result.timing_ema_alpha <= 1:
             raise ConfigError("decoupled.timing_ema_alpha must be in (0, 1]")

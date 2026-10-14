@@ -39,7 +39,7 @@ class LearnerTests(unittest.TestCase):
         self.assertFalse(future.done())
         self.learner.boundary()
         snapshot = future.result(timeout=1)
-        torch.testing.assert_close(snapshot.pseudo_gradient()["weight"], torch.full((1, 2), 0.29))
+        torch.testing.assert_close(snapshot.pseudo_gradient["weight"], torch.full((1, 2), 0.29))
         self.assertEqual(snapshot.local_steps, 2)
 
     def test_retry_reuses_capture_and_capacity_is_bounded_until_release(self):
@@ -79,7 +79,7 @@ class LearnerTests(unittest.TestCase):
             self.assertFalse(results[0].done())
             self.optimizer.step()
         snapshot = results[0].result(timeout=1)
-        torch.testing.assert_close(snapshot.pseudo_gradient()["weight"], torch.full((1, 2), 0.1))
+        torch.testing.assert_close(snapshot.pseudo_gradient["weight"], torch.full((1, 2), 0.1))
         self.assertEqual(snapshot.local_steps, 1)
 
     def test_incoming_replacement_is_deferred_and_preserves_other_fragment_and_optimizer_moments(self):

@@ -67,7 +67,7 @@ def _serve_learner(transport, learner, started, pause, parked, stop, finished, f
                     learner.release_snapshot(request_id)
                     captures.pop(request_id, None)
                 elif kind == "update":
-                    learner.queue_update(body["fragment_id"], body["parameters"], body["revision"], layout_signature=body["layout_signature"], global_step=body.get("global_step", 0))
+                    learner.queue_update(body["fragment_id"], body["parameters"], body["revision"], layout_signature=body["layout_signature"], global_step=body.get("global_step", 0), acked_request_id=body.get("acked_request_id"))
                     send("update_ack", {"metadata": asdict(learner.metadata())})
                 elif kind == "syncer_clock":
                     learner.queue_syncer_clock(body["global_step"])

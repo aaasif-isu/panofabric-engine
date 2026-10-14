@@ -62,7 +62,7 @@ class DecoupledLearner:
     and request/release snapshots. They must not call training boundary methods.
     """
 
-    def __init__(self, model, num_fragments: int, *, learner_id: int, max_snapshot_requests: int = 1, stop_at_syncer_step: int | None = None):
+    def __init__(self, model, num_fragments: int, *, learner_id: int, max_snapshot_requests: int = 1, stop_at_syncer_step: int | None = None, rebase: bool = False, ledger: bool = False):
         if type(learner_id) is not int or learner_id < 0:
             raise ValueError("learner_id must be a nonnegative integer")
         if type(max_snapshot_requests) is not int or max_snapshot_requests < 1:
@@ -74,7 +74,7 @@ class DecoupledLearner:
         self.manager = FragmentManager.from_model(model, num_fragments)
         self._parameters = dict(model.named_parameters())
         self._states = tuple(
-            FragmentState(self.manager, fragment.fragment_id, self._parameters)
+            FragmentState(self.manager, fragment.fragment_id, self._parameters, rebase=rebase, ledger=ledger)
             for fragment in self.manager.fragments
         )
         self._owner = threading.get_ident()
@@ -104,7 +104,7 @@ class DecoupledLearner:
                 tuple(state.metadata() for state in self._states), self._syncer_step,
             )
 
-    def queue_update(self, fragment_id: int, parameters: Mapping[str, torch.Tensor], revision: int, *, layout_signature: str, global_step: int = 0) -> bool:
+    def queue_update(self, fragment_id: int, parameters: Mapping[str, torch.Tensor], revision: int, *, layout_signature: str, global_step: int = 0, acked_request_id: str | None = None) -> bool:
         self.manager.fragment(fragment_id)
         if type(global_step) is not int or global_step < 0:
             raise ValueError("global_step must be a nonnegative integer")
@@ -113,7 +113,7 @@ class DecoupledLearner:
             if existing is not None and existing[0] == revision and existing[1] != global_step:
                 raise ValueError("the same fragment revision must carry the same syncer clock")
             accepted = self._states[fragment_id].queue_update(
-                parameters, revision, layout_signature=layout_signature,
+                parameters, revision, layout_signature=layout_signature, acked_request_id=acked_request_id
             )
             if accepted:
                 self._fragment_clocks[fragment_id] = (revision, global_step)
@@ -183,7 +183,7 @@ class DecoupledLearner:
             if revision == self._states[fragment_id].metadata().last_applied_revision:
                 self._syncer_step = max(self._syncer_step, clock)
         self._syncer_step = max(self._syncer_step, self._pending_clock)
-        for request in tuple(self._requests.values()):
+        for request_id, request in tuple(self._requests.items()):
             if request.future.done():
                 continue
             state = self._states[request.fragment_id]
@@ -202,7 +202,7 @@ class DecoupledLearner:
                 ))
             else:
                 try:
-                    snapshot = state.snapshot(self._parameters)
+                    snapshot = state.snapshot(self._parameters, request_id)
                 except Exception as exc:
                     request.future.set_exception(exc)
                 else:

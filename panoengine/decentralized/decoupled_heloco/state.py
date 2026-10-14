@@ -80,16 +80,24 @@ class FragmentState:
         parameters: Mapping[str, torch.Tensor],
         *,
         initial_revision: int = 0,
+        rebase: bool = False,
+        ledger: bool = False,
     ):
         _revision(initial_revision)
         self.manager = manager
         self.fragment_id = fragment_id
         self._baseline = _cpu_copy(manager.select(fragment_id, parameters))
+        self.rebase = rebase
+        self.ledger = ledger
         self._local_steps = 0
         self._tokens = 0
         self._last_server_revision = initial_revision
         self._last_applied_revision = initial_revision
-        self._pending: tuple[int, dict[str, torch.Tensor]] | None = None
+        self._pending: tuple[int, dict[str, torch.Tensor], str | None] | None = None
+        self._inflight_request_id: str | None = None
+        self._inflight_steps: int = 0
+        self._inflight_tokens: int = 0
+        self._inflight_pg: Mapping[str, torch.Tensor] | None = None
         self._lock = threading.RLock()
 
     def record_step(self, tokens: int) -> None:
@@ -112,11 +120,15 @@ class FragmentState:
                 self._last_server_revision, self._last_applied_revision,
             )
 
-    def snapshot(self, parameters: Mapping[str, torch.Tensor]) -> FragmentSnapshot:
+    def snapshot(self, parameters: Mapping[str, torch.Tensor], request_id: str) -> FragmentSnapshot:
         """Capture at a safe step boundary without altering baseline/counters."""
         with self._lock:
             current = _cpu_copy(self.manager.select(self.fragment_id, parameters))
             pseudo_gradient = {name: self._baseline[name] - current[name] for name in self._baseline}
+            self._inflight_request_id = request_id
+            self._inflight_steps = self._local_steps
+            self._inflight_tokens = self._tokens
+            self._inflight_pg = pseudo_gradient
             return FragmentSnapshot(
                 self.fragment_id, self.manager.layout_signature,
                 self._last_applied_revision, self._local_steps, self._tokens,
@@ -129,6 +141,7 @@ class FragmentState:
         revision: int,
         *,
         layout_signature: str,
+        acked_request_id: str | None = None,
     ) -> bool:
         """Queue the latest revision; never mutate model weights here.
 
@@ -144,7 +157,7 @@ class FragmentState:
             if revision <= self._last_server_revision:
                 return False
             pending = _cpu_copy(parameters)
-            self._pending = (revision, pending)
+            self._pending = (revision, pending, acked_request_id)
             self._last_server_revision = revision
             return True
 
@@ -159,20 +172,48 @@ class FragmentState:
         with self._lock:
             if self._pending is None:
                 return False
-            revision, update = self._pending
+            revision, update, acked_request_id = self._pending
             targets = self.manager.select(self.fragment_id, parameters)
             for tensor in targets.values():
                 _dense(tensor)
+                
+            acked = (self._inflight_request_id is not None and self._inflight_request_id == acked_request_id)
+            
             with torch.no_grad():
-                staged = {
-                    name: update[name].to(device=target.device, dtype=target.dtype, copy=True)
-                    for name, target in targets.items()
-                }
-                new_baseline = _cpu_copy(staged)
+                staged = {}
+                pure_update = {}
+                for name, target in targets.items():
+                    update_t = update[name].to(device=target.device, dtype=target.dtype, copy=True)
+                    pure_update[name] = update_t
+                    if self.rebase:
+                        baseline_t = self._baseline[name].to(device=target.device, dtype=target.dtype, copy=True)
+                        if acked and self._inflight_pg is not None:
+                            pg_t = self._inflight_pg[name].to(device=target.device, dtype=target.dtype, copy=True)
+                            staged[name] = target + update_t - baseline_t + pg_t
+                        else:
+                            staged[name] = target + update_t - baseline_t
+                    else:
+                        staged[name] = update_t
+
+                new_baseline = _cpu_copy(pure_update)
                 for name, target in targets.items():
                     target.copy_(staged[name])
+            
             self._baseline = new_baseline
-            self._local_steps = self._tokens = 0
+            
+            if self.ledger:
+                if acked:
+                    self._local_steps = max(0, self._local_steps - self._inflight_steps)
+                    self._tokens = max(0, self._tokens - self._inflight_tokens)
+            else:
+                self._local_steps = 0
+                self._tokens = 0
+                
+            self._inflight_request_id = None
+            self._inflight_steps = 0
+            self._inflight_tokens = 0
+            self._inflight_pg = None
+            
             self._last_applied_revision = revision
             self._pending = None
             return True

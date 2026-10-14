@@ -164,10 +164,11 @@ def run_baseline_session(trainer, config, options, learner_id, run_dir, deadline
                     trajectory.save(trainer.step, dict(model.named_parameters()), tokens=total_tokens, force=trainer.step >= options.steps)
                     # Original-client pacing is explicitly disabled by the
                     # coordinator. Delay compute time only, once per step.
-                    delay = duration * (factor - 1)
-                    if time.monotonic() + delay >= deadline:
-                        raise TimeoutError("baseline pacing would exceed the training deadline")
-                    time.sleep(delay)
+                    if trainer.step > 1:
+                        delay = duration * (factor - 1)
+                        if time.monotonic() + delay >= deadline:
+                            raise TimeoutError("baseline pacing would exceed the training deadline")
+                        time.sleep(delay)
             if time_budget is None and not clock_mode and (client._local_step or window_tokens):
                 raise RuntimeError("partial local window remains; the budget must be divisible by H")
             write_json(folder / "training-done.json", {"local_steps": trainer.step, "pushes": pushes,

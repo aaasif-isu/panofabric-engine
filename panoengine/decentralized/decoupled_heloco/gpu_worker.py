@@ -64,7 +64,9 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
     clock_target = config.decoupled.syncer_steps if config.decoupled.stopping == "syncer_steps" else None
     learner = DecoupledLearner(model, config.decoupled.num_fragments, learner_id=learner_id,
                               stop_at_syncer_step=clock_target,
-                              max_snapshot_requests=config.decoupled.max_inflight_captures)
+                              max_snapshot_requests=config.decoupled.max_inflight_captures,
+                              rebase=config.decoupled.rebase,
+                              ledger=config.decoupled.ledger)
     
     # Pre-fetch the first batch to ensure dataset preparation (e.g. HuggingFace downloads)
     # does not contaminate training step durations or artificial slowness pacing.
@@ -141,7 +143,8 @@ def run_session(transport, trainer, config, options, learner_id, log_folder, dea
                     done.set()
                 # Pacing is outside the optimizer step; the control thread and
                 # socket threads continue to receive and queue requests.
-                stop.wait(duration * (factor - 1))
+                if trainer.step > 1:
+                    stop.wait(duration * (factor - 1))
     finally:
         trainer.metrics_processor.log = original_log
         learner.boundary()

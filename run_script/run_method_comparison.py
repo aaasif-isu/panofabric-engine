@@ -49,12 +49,14 @@ def load_comparison(path):
     if len(set(methods)) != len(methods):
         raise ConfigError("method_run contains duplicate methods")
     evaluation = data.get("evaluation", {})
-    if not isinstance(evaluation, dict) or evaluation.keys() - {"enabled", "batches", "device", "validation_cache", "timeout"}:
+    if not isinstance(evaluation, dict) or evaluation.keys() - {"enabled", "batches", "device", "validation_cache", "timeout", "evaluate_trajectories"}:
         raise ConfigError("invalid evaluation section")
     evaluation = {"enabled": True, "batches": 100, "device": "cuda:0", "validation_cache": None,
-                  "timeout": 900.0, **evaluation}
+                  "timeout": 900.0, "evaluate_trajectories": False, **evaluation}
     if type(evaluation["enabled"]) is not bool:
         raise ConfigError("evaluation.enabled must be true or false")
+    if type(evaluation["evaluate_trajectories"]) is not bool:
+        raise ConfigError("evaluation.evaluate_trajectories must be true or false")
     if type(evaluation["batches"]) is not int or not 1 <= evaluation["batches"] <= 10000:
         raise ConfigError("evaluation.batches must be in 1..10000")
     if not isinstance(evaluation["device"], str) or re.fullmatch(r"cuda:[0-9]+", evaluation["device"]) is None:
@@ -560,6 +562,28 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
                         print(f"{r['method']:<20} | {r['eval_language']:<10} | {r['loss']:<10.4f} | {r['perplexity']:<12.4f} | {r['next_token_accuracy']:<10.4f}")
                     print("-" * 74)
                     print(f"Metrics saved to: {folder} / comparison_<lang>.csv\n", flush=True)
+
+            if evaluation.get("evaluate_trajectories"):
+                print("\nEvaluating all saved trajectories on overall held-out stream", flush=True)
+                traj_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_trajectories.py"), "--run-dirs",
+                           *[manifest["runs"][m]["folder"] for m in comparison["methods"]],
+                           "--batches", str(evaluation["batches"]), "--device", evaluation["device"], "--output-dir", str(folder / "trajectory_evaluation")]
+                if cache_path is not None:
+                    traj_cmd += ["--validation-cache", str(cache_path)]
+                command_runner(traj_cmd, folder / "trajectory_evaluation.log", repo_root, evaluation["timeout"] * 5)
+                
+                if dist_mode in ("non_iid", "both") and languages:
+                    for lang in unique_languages:
+                        print(f"Evaluating trajectories on language '{lang}'...", flush=True)
+                        lang_traj_cmd = [sys.executable, str(SCRIPT_DIR / "evaluate_trajectories.py"), "--run-dirs",
+                                   *[manifest["runs"][m]["folder"] for m in comparison["methods"]],
+                                   "--batches", str(evaluation["batches"]), "--device", evaluation["device"], "--output-dir", str(folder / f"trajectory_evaluation_{lang}")]
+                        lang_cache_path = folder / f"validation_cache_{lang}.pt"
+                        if lang_cache_path.is_file():
+                            lang_traj_cmd += ["--validation-cache", str(lang_cache_path)]
+                        env = dict(os.environ, ISLAND_LANGUAGE=lang)
+                        with open(folder / f"trajectory_evaluation_{lang}.log", "w") as log_f:
+                            subprocess.run(lang_traj_cmd, cwd=repo_root, env=env, stdout=log_f, stderr=subprocess.STDOUT)
 
                 # 3. Per-learner local evaluation
                 pass

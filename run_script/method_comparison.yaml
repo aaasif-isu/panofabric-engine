@@ -88,7 +88,7 @@ decoupled:
   fragment_offsets: [0,1,2,3]      # null resolves to [0,1,2,3] when H=4.
                               # Or one distinct integer per fragment in [0,H).
                               # round_robin requires both H/offset fields to be null.
-  min_local_steps: 5       # Minimum local work since applying this fragment.
+  min_local_steps: 10       # Minimum local work since applying this fragment.
                               # null => paper_offsets:1; round_robin:overlap_steps.
                               # Explicit positive integer overrides either default.
 
@@ -104,6 +104,9 @@ decoupled:
                               # false: use the fixed interval*factor grace above.
   timing_ema_alpha: 0.2       # (0,1]; smoothing of timing estimates.
                               # Larger values react faster to recent measurements.
+
+  rebase: true               # Optional Rebase-and-Ledger feature: preserve local displacement.
+  ledger: true               # Ledger preserves unconsumed local step/token progress across revisions.
 
   # Used only by decoupled_heloco; ignored by decoupled_diloco.
   heloco:
@@ -129,9 +132,10 @@ evaluation:
   validation_cache: null     # null freezes one shared held-out stream.
                               # Or a compatible validation_batches.pt file path.
   timeout: 900.0             # Positive evaluation timeout in seconds.
+  evaluate_trajectories: true # true/false; evaluate intermediate checkpoints if available.
 
 monitoring:
-  enabled: false              # true/false; trajectories and measured CPU resources.
+  enabled: true              # true/false; trajectories and measured CPU resources.
   global_every_updates: 10    # Export global snapshot every N committed outer updates.
                               # N>=1; 1 records every update and adds snapshot IO.
   learner_every_steps: 100    # Export each learner snapshot every N local steps; N>=1.

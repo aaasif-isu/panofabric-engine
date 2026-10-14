@@ -387,7 +387,7 @@ class RemoteLearner:
                 self.transport.send("release", {"request_id": request_id})
         return future is not None
 
-    def queue_update(self, fragment_id, parameters: Mapping[str, torch.Tensor], revision, *, layout_signature, global_step=0):
+    def queue_update(self, fragment_id, parameters: Mapping[str, torch.Tensor], revision, *, layout_signature, global_step=0, acked_request_id=None):
         if not self.available:
             raise ConnectionError(self.failure)
         key = (fragment_id, revision)
@@ -395,7 +395,7 @@ class RemoteLearner:
             self._updates.discard(key)
             return False
         if key not in self._updates:
-            self.transport.send("update", {"fragment_id": fragment_id, "revision": revision, "layout_signature": layout_signature, "parameters": dict(parameters), "global_step": global_step})
+            self.transport.send("update", {"fragment_id": fragment_id, "revision": revision, "layout_signature": layout_signature, "parameters": dict(parameters), "global_step": global_step, "acked_request_id": acked_request_id})
             self._updates.add(key)
         return False  # The syncer retains its outbox until an ACK report arrives.
 
