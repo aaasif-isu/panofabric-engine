@@ -1,0 +1,198 @@
+commit dd854a591366e9b79ed76ef5361371f324339d90
+Author: aaasif-isu <aaasif@iastate.edu>
+Date:   Thu Oct 22 12:53:52 2026 -0500
+
+    Implement bounded-memory chunking for Decoupled DiLoCo TCP transport
+
+diff --git a/panoengine/decentralized/decoupled_heloco/transport.py b/panoengine/decentralized/decoupled_heloco/transport.py
+index e6e4663..3c65722 100644
+--- a/panoengine/decentralized/decoupled_heloco/transport.py
++++ b/panoengine/decentralized/decoupled_heloco/transport.py
+@@ -106,48 +106,63 @@ class TransportBackpressure(ConnectionError):
+ 
+ 
+ class _Outbox:
+-    """FIFO required frames plus one replaceable, unsent progress report."""
+     def __init__(self, capacity):
+         self.capacity = capacity
+-        self.items = deque()
++        self.control_items = deque()
++        self.bulk_items = deque()
+         self.condition = threading.Condition()
+         self.required = self.unfinished_tasks = self.peak = self.coalesced = 0
+ 
+-    def put_nowait(self, item):
++    def put_nowait(self, item, is_control=False):
+         with self.condition:
+-            if self.required >= self.capacity:
+-                raise queue.Full
+-            self.required += 1
+-            self._append(item, False)
++            if not is_control:
++                if self.required >= self.capacity:
++                    raise queue.Full
++                self.required += 1
++                self.bulk_items.append((item, False))
++            else:
++                self.control_items.append((item, False))
++            self.unfinished_tasks += 1
++            self.peak = max(self.peak, len(self.control_items) + len(self.bulk_items))
++            self.condition.notify_all()
+ 
+     def progress(self, body):
+         with self.condition:
+-            for index, (_, replaceable) in enumerate(self.items):
++            for index, (item, replaceable) in enumerate(self.control_items):
+                 if replaceable:
+-                    del self.items[index]
++                    del self.control_items[index]
+                     self.unfinished_tasks -= 1
+                     self.coalesced += 1
+                     break
+-            # Append at the tail: newer counters cannot overtake an older ACK.
+-            self._append(("metadata", body), True)
+-
+-    def _append(self, item, replaceable):
+-        self.items.append((item, replaceable))
+-        self.unfinished_tasks += 1
+-        self.peak = max(self.peak, len(self.items))
+-        self.condition.notify_all()
++            self.control_items.append((("metadata", body), True))
++            self.unfinished_tasks += 1
++            self.peak = max(self.peak, len(self.control_items) + len(self.bulk_items))
++            self.condition.notify_all()
+ 
+     def get(self, timeout):
+         deadline = time.monotonic() + timeout
+         with self.condition:
+-            while not self.items:
++            while not self.control_items and not self.bulk_items:
+                 remaining = deadline - time.monotonic()
+                 if remaining <= 0:
+                     raise queue.Empty
+                 self.condition.wait(remaining)
+-            item, replaceable = self.items.popleft()
+-            if not replaceable:
+-                self.required -= 1
++            if self.control_items:
++                item, replaceable = self.control_items.popleft()
++            else:
++                item, replaceable = self.bulk_items.popleft()
++                if not replaceable:
++                    self.required -= 1
++            self.unfinished_tasks -= 1
++            self.condition.notify_all()
++            return item
++
++    def get_control_nowait(self):
++        with self.condition:
++            if not self.control_items:
++                raise queue.Empty
++            item, replaceable = self.control_items.popleft()
++            self.unfinished_tasks -= 1
+             self.condition.notify_all()
+             return item
+ 
+@@ -174,6 +189,7 @@ class FramedTransport:
+         self._outgoing = _Outbox(capacity)
+         self._stats = {"backpressure_retries": 0, "incoming_full_retries": 0, "encode_seconds": 0., "send_seconds": 0.}
+         self._incoming = queue.Queue(maxsize=capacity)
++        self._active_transfers = {}
+         self._closed = threading.Event()
+         self._lock = threading.Lock()
+         self._error = None
+@@ -198,8 +214,11 @@ class FramedTransport:
+ 
+     def send(self, kind: str, body: dict):
+         self.check()
++        is_control = kind not in {"update", "snapshot"}
++        if kind == "update": kind = "update_bulk"
++        if kind == "snapshot": kind = "snapshot_bulk"
+         try:
+-            self._outgoing.put_nowait((kind, body))
++            self._outgoing.put_nowait((kind, body), is_control)
+         except queue.Full as exc:
+             raise TransportBackpressure("outgoing TCP queue is full") from exc
+ 
+@@ -233,15 +252,72 @@ class FramedTransport:
+                         incoming_pending=self._incoming.qsize())
+ 
+     def receive(self):
+-        # Drain already received messages, including a final stopped message,
+-        # before surfacing an EOF that followed them.
+-        try:
+-            message = self._incoming.get_nowait()
+-            self._incoming.task_done()
+-            return message
+-        except queue.Empty:
+-            self.check()
+-            return None
++        while True:
++            try:
++                message = self._incoming.get_nowait()
++                self._incoming.task_done()
++            except queue.Empty:
++                self.check()
++                return None
++                
++            kind = message["kind"]
++            if kind in {"update_begin", "snapshot_begin"}:
++                t_id = message["body"]["transfer_id"]
++                self._active_transfers[t_id] = {
++                    "body": message["body"],
++                    "parameters": {},
++                    "kind": "update" if kind == "update_begin" else "snapshot"
++                }
++                continue
++            elif kind in {"update_chunk", "snapshot_chunk"}:
++                t_id = message["body"]["transfer_id"]
++                if t_id not in self._active_transfers:
++                    continue
++                transfer = self._active_transfers[t_id]
++                name = message["body"]["name"]
++                if name not in transfer["parameters"]:
++                    import torch
++                    chunk_data = message["body"]["data"]
++                    shape = message["body"]["shape"]
++                    transfer["parameters"][name] = torch.empty(shape, dtype=chunk_data.dtype, device='cpu')
++                
++                flat_target = transfer["parameters"][name].view(-1)
++                chunk_data = message["body"]["data"]
++                start = message["body"]["start"]
++                flat_target[start:start+chunk_data.numel()].copy_(chunk_data.view(-1))
++                continue
++            elif kind in {"update_commit", "snapshot_commit"}:
++                t_id = message["body"]["transfer_id"]
++                if t_id not in self._active_transfers:
++                    continue
++                transfer = self._active_transfers.pop(t_id)
++                body = transfer["body"]
++                parameters = transfer["parameters"]
++                if transfer["kind"] == "update":
++                    result_body = {
++                        "fragment_id": body["fragment_id"],
++                        "revision": body["revision"],
++                        "layout_signature": body["layout_signature"],
++                        "global_step": body["global_step"],
++                        "acked_request_id": body["acked_request_id"],
++                        "parameters": parameters
++                    }
++                    return {"kind": "update", "body": result_body}
++                else:
++                    result_body = {
++                        "request_id": body["request_id"],
++                        "snapshot": {
++                            "fragment_id": body["fragment_id"],
++                            "layout_signature": body["layout_signature"],
++                            "base_revision": body["base_revision"],
++                            "local_steps": body["local_steps"],
++                            "tokens": body["tokens"],
++                            "pseudo_gradient": parameters
++                        }
++                    }
++                    return {"kind": "snapshot", "body": result_body}
++            else:
++                return message
+ 
+     def _read_exact(self, size):
+         try:

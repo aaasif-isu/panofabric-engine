@@ -107,6 +107,7 @@ def _serve_learner(transport, learner, started, pause, parked, stop, finished, f
 def _learner_process(address, token, learner_id, config, timeout):
     transport = None
     try:
+        import torch
         torch.set_num_threads(1)
         torch.manual_seed(config.run.get("seed", 42))
         transport = FramedTransport(socket.create_connection(address, timeout=5.0))
