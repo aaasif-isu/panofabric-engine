@@ -1,0 +1,700 @@
+........Note: running syncer_steps across mixed methods. Be aware that token counts will differ between normal and decoupled baselines.
+FNote: running syncer_steps across mixed methods. Be aware that token counts will differ between normal and decoupled baselines.
+..Note: running syncer_steps across mixed methods. Be aware that token counts will differ between normal and decoupled baselines.
+.Note: running syncer_steps across mixed methods. Be aware that token counts will differ between normal and decoupled baselines.
+..E..........EProcess decoupled-learner-1:
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/process_smoke.py", line 151, in _learner_process
+    raise RuntimeError(str(failures[0]))
+RuntimeError: TCP transport failed: peer disconnected
+Process decoupled-learner-0:
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/process_smoke.py", line 151, in _learner_process
+    raise RuntimeError(str(failures[0]))
+RuntimeError: TCP transport failed: peer disconnected
+F..............F.FE............................................................................................EEE/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/nn/modules/module.py:2885: ResourceWarning: unclosed <socket.socket fd=76, family=2, type=1, proto=0, laddr=('127.0.0.1', 53107)>
+  memo = set()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274697 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274696 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274695 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/nn/modules/module.py:2885: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpiojw7tn7/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  memo = set()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/nn/modules/module.py:2885: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpiojw7tn7/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  memo = set()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/nn/modules/module.py:2885: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpiojw7tn7/learner_2/trainer.log' mode='w' encoding='utf-8'>
+  memo = set()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.......PROCESS SMOKE TEST FAILED: unexpected learner message: snapshot_bulk
+Process decoupled-learner-0:
+Traceback (most recent call last):
+Process decoupled-learner-1:
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/process_smoke.py", line 151, in _learner_process
+    raise RuntimeError(str(failures[0]))
+RuntimeError: TCP transport failed: peer disconnected
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/process_smoke.py", line 151, in _learner_process
+    raise RuntimeError(str(failures[0]))
+RuntimeError: TCP transport failed: peer disconnected
+F..........EEE/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed <socket.socket fd=91, family=2, type=1, proto=0, laddr=('127.0.0.1', 56453)>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274987 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274986 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274985 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpyuqjbu4_/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpyuqjbu4_/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpyuqjbu4_/learner_2/trainer.log' mode='w' encoding='utf-8'>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.........E.EEEEE./lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed <socket.socket fd=96, family=2, type=1, proto=0, laddr=('127.0.0.1', 41207)>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275633 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275632 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp3ilbppis/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/_weights_only_unpickler.py:506: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp3ilbppis/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  self.append({})
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..E....EEE............EEE/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/yaml/scanner.py:286: ResourceWarning: unclosed <socket.socket fd=93, family=2, type=1, proto=0, laddr=('127.0.0.1', 36769)>
+  for level in list(self.possible_simple_keys):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/yaml/scanner.py:286: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpndyl_se9/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  for level in list(self.possible_simple_keys):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275828 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/yaml/scanner.py:286: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpndyl_se9/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  for level in list(self.possible_simple_keys):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275829 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/yaml/scanner.py:286: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpndyl_se9/learner_2/trainer.log' mode='w' encoding='utf-8'>
+  for level in list(self.possible_simple_keys):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275830 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+Note: running syncer_steps across mixed methods. Be aware that token counts will differ between normal and decoupled baselines.
+F..E...<string>:2: ResourceWarning: unclosed <socket.socket fd=93, family=2, type=1, proto=0, laddr=('127.0.0.1', 42037)>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275879 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3275878 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<string>:2: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp5thb1lxq/learner_0/trainer.log' mode='w' encoding='utf-8'>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<string>:2: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp5thb1lxq/learner_1/trainer.log' mode='w' encoding='utf-8'>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..................F..F..E/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/serialization.py:2253: ResourceWarning: unclosed <socket.socket fd=93, family=2, type=1, proto=0, laddr=('127.0.0.1', 44507)>
+  unpickler = UnpicklerWrapper(data_file, **pickle_load_args)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3276125 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3276124 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/serialization.py:2253: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpke83pd7z/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  unpickler = UnpicklerWrapper(data_file, **pickle_load_args)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/serialization.py:2253: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpke83pd7z/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  unpickler = UnpicklerWrapper(data_file, **pickle_load_args)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+GPU training started: syncer_pid=3273710, learner_pids=[3276170, 3276171]
+Logs: /tmp/tmpj2z8st8v
+GPU TRAINING CHECK FAILED: unexpected learner message: snapshot_bulk
+Logs: /tmp/tmpj2z8st8v
+E./lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py:2217: ResourceWarning: unclosed <socket.socket fd=114, family=2, type=1, proto=0, laddr=('127.0.0.1', 46465)>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py:2217: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpj2z8st8v/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3276170 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py:2217: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpj2z8st8v/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3276171 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+Trajectory evaluation output: /lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/outputs/trajectory_evaluation/20261022T174512-bb5128
+Reusing 1 frozen held-out batches
+.Trajectory evaluation output: /lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/outputs/trajectory_evaluation/20261022T174512-4c7a12
+Reusing 1 frozen held-out batches
+ETrajectory evaluation output: /lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/outputs/trajectory_evaluation/20261022T174512-fe3ae0
+Reusing 1 frozen held-out batches
+.E....EFE
+======================================================================
+ERROR: test_one_yaml_runs_all_five_real_cpu_coordinators_then_one_shared_evaluation (test_comparison.FullCPUComparisonTests.test_one_yaml_runs_all_five_real_cpu_coordinators_then_one_shared_evaluation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/config.py", line 159, in from_mapping
+    resolve_paper_schedule(result.num_fragments, result.sync_period, result.fragment_offsets)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/schedule_spec.py", line 10, in resolve_paper_schedule
+    raise ValueError("fragment_offsets must contain one offset per fragment")
+ValueError: fragment_offsets must contain one offset per fragment
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_comparison.py", line 142, in test_one_yaml_runs_all_five_real_cpu_coordinators_then_one_shared_evaluation
+    loaded = comparison.load_comparison(path)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/run_script/run_method_comparison.py", line 74, in load_comparison
+    config = load_config(effective)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/config.py", line 282, in load_config
+    decoupled = DecoupledConfig.from_mapping(_mapping(data.get("decoupled", {}), "decoupled"))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/config.py", line 161, in from_mapping
+    raise ConfigError(f"decoupled: {exc}") from exc
+panoengine.decentralized.decoupled_heloco.config.ConfigError: decoupled: fragment_offsets must contain one offset per fragment
+
+======================================================================
+ERROR: test_real_fixed_budget_coordinator_exports_tagged_diloco_checkpoint_and_tail (test_diloco.DiLoCoWorkflowTests.test_real_fixed_budget_coordinator_exports_tagged_diloco_checkpoint_and_tail)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_diloco.py", line 174, in test_real_fixed_budget_coordinator_exports_tagged_diloco_checkpoint_and_tail
+    status = _run_training(config, options, model, ["0", "1"], folder, 30.0, ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_slow_reader_survives_more_than_old_timeout (test_flow_control.FlowControlTests.test_slow_reader_survives_more_than_old_timeout)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_flow_control.py", line 42, in test_slow_reader_survives_more_than_old_timeout
+    self.assertGreater(receiver.diagnostics()['incoming_full_retries'], 0)
+                       ^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_pipeline_drains_clock_budget_over_tcp_for_both_methods (test_pipeline.PipelineTests.test_pipeline_drains_clock_budget_over_tcp_for_both_methods) (method='decoupled_diloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_pipeline.py", line 260, in test_pipeline_drains_clock_budget_over_tcp_for_both_methods
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_pipeline_drains_clock_budget_over_tcp_for_both_methods (test_pipeline.PipelineTests.test_pipeline_drains_clock_budget_over_tcp_for_both_methods) (method='decoupled_heloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_pipeline.py", line 260, in test_pipeline_drains_clock_budget_over_tcp_for_both_methods
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_pipeline_local_budget_drains_after_real_learner_crash (test_pipeline.PipelineTests.test_pipeline_local_budget_drains_after_real_learner_crash)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_pipeline.py", line 216, in test_pipeline_local_budget_drains_after_real_learner_crash
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1', '2'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_hard_learner_crash_preserves_surviving_budgets_over_real_tcp (test_resilience.ResilienceTests.test_hard_learner_crash_preserves_surviving_budgets_over_real_tcp) (method='decoupled_diloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_resilience.py", line 148, in test_hard_learner_crash_preserves_surviving_budgets_over_real_tcp
+    status = _run_training(config, options, _TinyTokenModel(2), ["0", "1", "2"], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_hard_learner_crash_preserves_surviving_budgets_over_real_tcp (test_resilience.ResilienceTests.test_hard_learner_crash_preserves_surviving_budgets_over_real_tcp) (method='decoupled_heloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_resilience.py", line 148, in test_hard_learner_crash_preserves_surviving_budgets_over_real_tcp
+    status = _run_training(config, options, _TinyTokenModel(2), ["0", "1", "2"], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_remote_disconnect_fails_pending_captures_and_reconnect_resets_transport_state (test_resilience.ResilienceTests.test_remote_disconnect_fails_pending_captures_and_reconnect_resets_transport_state)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_resilience.py", line 112, in test_remote_disconnect_fails_pending_captures_and_reconnect_resets_transport_state
+    future = remote.request_snapshot("0", 0, 0)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 449, in request_snapshot
+    self.transport.send("pull", {"request_id": request_id, "fragment_id": fragment_id, "expected_revision": expected_revision, "min_local_steps": min_local_steps})
+    ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'send'
+
+======================================================================
+ERROR: test_replicated_state_matches_serial_all_merge_and_correction_modes (test_sharding.ShardingTests.test_replicated_state_matches_serial_all_merge_and_correction_modes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_sharding.py", line 76, in test_replicated_state_matches_serial_all_merge_and_correction_modes
+    actual, norm = backend.merge_step(fragment, snapshots, weights, mode)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/sharding.py", line 247, in merge_step
+    assignments[learner_id % self.shards].append((dict(s.pseudo_gradient), weight))
+                                                       ^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'pseudo_gradient'
+
+======================================================================
+ERROR: test_stopped_replica_send_has_bounded_timeout_and_cleanup (test_sharding.ShardingTests.test_stopped_replica_send_has_bounded_timeout_and_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_sharding.py", line 127, in test_stopped_replica_send_has_bounded_timeout_and_cleanup
+    backend.merge_step(0, {1:snapshot}, (1.,), 'weighted_average')
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/sharding.py", line 247, in merge_step
+    assignments[learner_id % self.shards].append((dict(s.pseudo_gradient), weight))
+                                                       ^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'pseudo_gradient'
+
+======================================================================
+ERROR: test_tcp_pipeline_clock_and_missing_learner_shard (test_sharding.ShardingTests.test_tcp_pipeline_clock_and_missing_learner_shard) (method='decoupled_diloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_sharding.py", line 169, in test_tcp_pipeline_clock_and_missing_learner_shard
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1', '2'], folder, 60., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_tcp_pipeline_clock_and_missing_learner_shard (test_sharding.ShardingTests.test_tcp_pipeline_clock_and_missing_learner_shard) (method='decoupled_heloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_sharding.py", line 169, in test_tcp_pipeline_clock_and_missing_learner_shard
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1', '2'], folder, 60., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_delayed_exit_after_stopped_ack_exports_success_for_both_methods (test_shutdown.ShutdownTests.test_delayed_exit_after_stopped_ack_exports_success_for_both_methods) (method='decoupled_heloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_shutdown.py", line 64, in test_delayed_exit_after_stopped_ack_exports_success_for_both_methods
+    status = _run_training(config, options, _TinyTokenModel(2), ['0','1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_delayed_exit_after_stopped_ack_exports_success_for_both_methods (test_shutdown.ShutdownTests.test_delayed_exit_after_stopped_ack_exports_success_for_both_methods) (method='decoupled_diloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_shutdown.py", line 64, in test_delayed_exit_after_stopped_ack_exports_success_for_both_methods
+    status = _run_training(config, options, _TinyTokenModel(2), ['0','1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_bf16_baseline_matches_weights_actually_applied (test_state.FragmentStateTests.test_bf16_baseline_matches_weights_actually_applied)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_state.py", line 106, in test_bf16_baseline_matches_weights_actually_applied
+    torch.testing.assert_close(state.snapshot(local).pseudo_gradient()["a"], torch.zeros(2), rtol=0, atol=0)
+                               ^^^^^^^^^^^^^^^^^^^^^
+TypeError: FragmentState.snapshot() missing 1 required positional argument: 'request_id'
+
+======================================================================
+ERROR: test_queue_does_not_mutate_live_weights_and_replacement_resets_only_one_fragment (test_state.FragmentStateTests.test_queue_does_not_mutate_live_weights_and_replacement_resets_only_one_fragment)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_state.py", line 68, in test_queue_does_not_mutate_live_weights_and_replacement_resets_only_one_fragment
+    snapshot = self.states[0].snapshot(self.parameters)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: FragmentState.snapshot() missing 1 required positional argument: 'request_id'
+
+======================================================================
+ERROR: test_real_local_steps_produce_expected_pseudo_gradients_without_consuming_work (test_state.FragmentStateTests.test_real_local_steps_produce_expected_pseudo_gradients_without_consuming_work)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_state.py", line 32, in test_real_local_steps_produce_expected_pseudo_gradients_without_consuming_work
+    snapshot = self.states[i].snapshot(self.parameters)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: FragmentState.snapshot() missing 1 required positional argument: 'request_id'
+
+======================================================================
+ERROR: test_snapshots_and_baselines_do_not_alias_live_parameters_or_each_other (test_state.FragmentStateTests.test_snapshots_and_baselines_do_not_alias_live_parameters_or_each_other)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_state.py", line 42, in test_snapshots_and_baselines_do_not_alias_live_parameters_or_each_other
+    first = self.states[0].snapshot(self.parameters)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: FragmentState.snapshot() missing 1 required positional argument: 'request_id'
+
+======================================================================
+ERROR: test_clock_budget_over_tcp_includes_sparse_terminal_slot_and_ignores_local_cap (test_syncer_clock.SyncerClockTests.test_clock_budget_over_tcp_includes_sparse_terminal_slot_and_ignores_local_cap) (method='decoupled_diloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_syncer_clock.py", line 167, in test_clock_budget_over_tcp_includes_sparse_terminal_slot_and_ignores_local_cap
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_clock_budget_over_tcp_includes_sparse_terminal_slot_and_ignores_local_cap (test_syncer_clock.SyncerClockTests.test_clock_budget_over_tcp_includes_sparse_terminal_slot_and_ignores_local_cap) (method='decoupled_heloco')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_syncer_clock.py", line 167, in test_clock_budget_over_tcp_includes_sparse_terminal_slot_and_ignores_local_cap
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_clock_budget_survives_a_crashed_learner_over_tcp (test_syncer_clock.SyncerClockTests.test_clock_budget_survives_a_crashed_learner_over_tcp)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_syncer_clock.py", line 95, in test_clock_budget_survives_a_crashed_learner_over_tcp
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1', '2'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_empty_sparse_budget_keeps_initial_snapshot_and_exports_zero_revisions (test_syncer_clock.SyncerClockTests.test_empty_sparse_budget_keeps_initial_snapshot_and_exports_zero_revisions)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_syncer_clock.py", line 67, in test_empty_sparse_budget_keeps_initial_snapshot_and_exports_zero_revisions
+    status = _run_training(config, options, _TinyTokenModel(2), ['0', '1'], folder, 30., ROOT,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_fixed_budgets_final_drain_logs_and_global_export_over_real_tcp (test_training.TrainingProcessTests.test_fixed_budgets_final_drain_logs_and_global_export_over_real_tcp)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_training.py", line 208, in test_fixed_budgets_final_drain_logs_and_global_export_over_real_tcp
+    status = _run_training(self.config(), self.options(), model, ["0", "1"], folder, 30.0, ROOT, worker_command=[sys.executable, str(Path(__file__).with_name("cpu_training_worker.py"))])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_slow_first_batch_does_not_inflate_grace_or_sleep (test_training.TrainingProcessTests.test_slow_first_batch_does_not_inflate_grace_or_sleep)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_training.py", line 263, in test_slow_first_batch_does_not_inflate_grace_or_sleep
+    status = _run_training(config, options, _TinyTokenModel(2), ["0", "1"], folder, 20.0, ROOT, worker_command=[sys.executable, str(Path(__file__).with_name("cpu_training_worker.py")), "--slow-first-batch", "2.0"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/gpu_training.py", line 380, in _run_training
+    (folder / "transport_diagnostics.json").write_text(json.dumps([t.diagnostics() for t in transports], indent=2))
+                                                                   ^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 218, in diagnostics
+    outgoing_pending=len(self._outgoing.items),
+                         ^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_Outbox' object has no attribute 'items'
+
+======================================================================
+ERROR: test_missing_intermediate_checkpoint (test_trajectory_validation.TestTrajectoryValidation.test_missing_intermediate_checkpoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1396, in patched
+    return func(*newargs, **newkeywargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_trajectory_validation.py", line 102, in test_missing_intermediate_checkpoint
+    evaluate_trajectories.run_trajectory_validation([Path("/tmp")], REPO_ROOT, batches=1, device="cuda:0", validation_cache_path="/tmp/cache.pt")
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/run_script/evaluate_trajectories.py", line 75, in run_trajectory_validation
+    validation={**cache_metadata, "batches_sha256": cache["batches_sha256"], "cache_path": str(cache_path)},
+                                                    ~~~~~^^^^^^^^^^^^^^^^^^
+KeyError: 'batches_sha256'
+
+======================================================================
+ERROR: test_actual_tcp_frame_roundtrip_and_wire_byte_counters (test_transport.TransportTests.test_actual_tcp_frame_roundtrip_and_wire_byte_counters)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 83, in test_actual_tcp_frame_roundtrip_and_wire_byte_counters
+    parent.flush()
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 373, in flush
+    raise TimeoutError("TCP send queue did not drain")
+TimeoutError: TCP send queue did not drain
+
+======================================================================
+ERROR: test_remote_pull_captures_at_boundary_and_ignores_released_duplicate (test_transport.TransportTests.test_remote_pull_captures_at_boundary_and_ignores_released_duplicate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 130, in test_remote_pull_captures_at_boundary_and_ignores_released_duplicate
+    self.pump_until(future.done)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 60, in pump_until
+    _wait(poll)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 30, in _wait
+    result = operation()
+             ^^^^^^^^^^^
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 58, in poll
+    self.remote.pump()
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 510, in pump
+    self.handle(message)
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/panoengine/decentralized/decoupled_heloco/transport.py", line 500, in handle
+    raise ValueError(f"unexpected learner message: {kind}")
+ValueError: unexpected learner message: snapshot_bulk
+
+======================================================================
+ERROR: test_snapshot_serialization_creates_independent_tensors_and_preserves_metadata (test_transport.TransportTests.test_snapshot_serialization_creates_independent_tensors_and_preserves_metadata)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 72, in test_snapshot_serialization_creates_independent_tensors_and_preserves_metadata
+    torch.testing.assert_close(decoded["baseline"]["weight"], snapshot.baseline["weight"], rtol=0, atol=0)
+                               ~~~~~~~^^^^^^^^^^^^
+KeyError: 'baseline'
+
+======================================================================
+FAIL: test_default_five_methods_validate_and_preview_without_torch_or_launch (test_comparison.ComparisonConfigTests.test_default_five_methods_validate_and_preview_without_torch_or_launch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_comparison.py", line 37, in test_default_five_methods_validate_and_preview_without_torch_or_launch
+    self.assertEqual([r.steps for r in loaded["options"]], [40] * 5)
+AssertionError: Lists differ: [100000, 100000, 100000, 100000, 100000] != [40, 40, 40, 40, 40]
+
+First differing element 0:
+100000
+40
+
+- [100000, 100000, 100000, 100000, 100000]
++ [40, 40, 40, 40, 40]
+
+======================================================================
+FAIL: test_real_process_smoke_uses_diloco_and_shuts_down_cleanly (test_diloco.DiLoCoWorkflowTests.test_real_process_smoke_uses_diloco_and_shuts_down_cleanly)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_diloco.py", line 160, in test_real_process_smoke_uses_diloco_and_shuts_down_cleanly
+    self.assertEqual(run_process_smoke(config, learners=2, cycles=2, timeout=30.0), 0, output.getvalue())
+AssertionError: 2 != 0 : /lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/serialization.py:2237: ResourceWarning: unclosed <socket.socket fd=54, family=2, type=1, proto=0, laddr=('127.0.0.1', 59939)>
+  class UnpicklerWrapper(pickle_module.Unpickler):  # type: ignore[name-defined]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274380 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/tools/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 3274379 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/serialization.py:2237: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpw2ogm_e9/learner_0/trainer.log' mode='w' encoding='utf-8'>
+  class UnpicklerWrapper(pickle_module.Unpickler):  # type: ignore[name-defined]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/heloco/lib/python3.12/site-packages/torch/serialization.py:2237: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpw2ogm_e9/learner_1/trainer.log' mode='w' encoding='utf-8'>
+  class UnpicklerWrapper(pickle_module.Unpickler):  # type: ignore[name-defined]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+CPU process smoke: syncer_pid=3273710, learner_pids=[3274416, 3274417]
+Outer optimizer: diloco
+Localhost TCP: learners=2, fragments=2, quorum=2, overlap=2
+Interval=0.1s; grace=0.020000000000000004s after captured quorum; target_updates=4
+PROCESS SMOKE TEST FAILED: unexpected learner message: snapshot_bulk
+
+
+======================================================================
+FAIL: test_progress_order_and_bound (test_flow_control.FlowControlTests.test_progress_order_and_bound)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_flow_control.py", line 28, in test_progress_order_and_bound
+    self.assertEqual([out.get(.1) for _ in range(3)], [
+AssertionError: Lists differ: [('metadata', {'steps': 500}), ('snapshot', [33 chars] 2})] != [('snapshot', {'id': 1}), ('update_ack', {'i[33 chars]00})]
+
+First differing element 0:
+('metadata', {'steps': 500})
+('snapshot', {'id': 1})
+
+- [('metadata', {'steps': 500}),
+-  ('snapshot', {'id': 1}),
+? ^
+
++ [('snapshot', {'id': 1}),
+? ^
+
+-  ('update_ack', {'id': 2})]
+?                           ^
+
++  ('update_ack', {'id': 2}),
+?                           ^
+
++  ('metadata', {'steps': 500})]
+
+======================================================================
+FAIL: test_required_retry_and_latest_counters (test_flow_control.FlowControlTests.test_required_retry_and_latest_counters)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_flow_control.py", line 56, in test_required_retry_and_latest_counters
+    self.assertTrue(entered.wait(2))
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_separate_processes_transfer_each_fragment_and_exit_cleanly (test_process_smoke.ProcessSmokeTests.test_separate_processes_transfer_each_fragment_and_exit_cleanly)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_process_smoke.py", line 31, in test_separate_processes_transfer_each_fragment_and_exit_cleanly
+    self.assertEqual(status, 0)
+AssertionError: 2 != 0
+
+======================================================================
+FAIL: test_clock_comparison_rejects_mixed_budgets_before_launch (test_syncer_clock.SyncerClockTests.test_clock_comparison_rejects_mixed_budgets_before_launch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_syncer_clock.py", line 49, in test_clock_comparison_rejects_mixed_budgets_before_launch
+    with self.assertRaisesRegex(ConfigError, 'decoupled-only'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ConfigError not raised
+
+======================================================================
+FAIL: test_frame_check_accounts_for_both_snapshot_copies (test_training.TrainingAdapterTests.test_frame_check_accounts_for_both_snapshot_copies)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_training.py", line 109, in test_frame_check_accounts_for_both_snapshot_copies
+    with self.assertRaisesRegex(ConfigError, "snapshot exceeds"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ConfigError not raised
+
+======================================================================
+FAIL: test_training_scope_rejects_unsupported_modes_before_launch (test_training.TrainingAdapterTests.test_training_scope_rejects_unsupported_modes_before_launch) (changes={'config': 'llama3_1b'})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_training.py", line 102, in test_training_scope_rejects_unsupported_modes_before_launch
+    with self.subTest(changes=changes), self.assertRaises(ConfigError):
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ConfigError not raised
+
+======================================================================
+FAIL: test_saturated_outgoing_queue_raises_instead_of_blocking_the_caller (test_transport.TransportTests.test_saturated_outgoing_queue_raises_instead_of_blocking_the_caller)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/lustre/hdd/LAS/jannesar-lab/aaasif/panofabric_run/panofabric-engine/tests/decoupled_heloco/test_transport.py", line 111, in test_saturated_outgoing_queue_raises_instead_of_blocking_the_caller
+    with self.assertRaisesRegex(ConnectionError, "queue is full"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ConnectionError not raised
+
+----------------------------------------------------------------------
+Ran 243 tests in 184.710s
+
+FAILED (failures=9, errors=29)
