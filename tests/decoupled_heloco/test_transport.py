@@ -68,10 +68,11 @@ class TransportTests(unittest.TestCase):
             self.model.weight.sum().backward()
             optimizer.step()
         snapshot = future.result()
-        decoded = decode_message(encode_message("snapshot", snapshot_to_wire(snapshot)))["body"]
-        torch.testing.assert_close(decoded["baseline"]["weight"], snapshot.baseline["weight"], rtol=0, atol=0)
-        decoded["current"]["weight"].zero_()
-        torch.testing.assert_close(snapshot.current["weight"], torch.tensor([0.9]))
+        payload, tensors = encode_message("snapshot", snapshot_to_wire(snapshot))
+        decoded = decode_message(payload, tensors)["body"]
+        torch.testing.assert_close(decoded["pseudo_gradient"]["weight"], snapshot.pseudo_gradient["weight"], rtol=0, atol=0)
+        decoded["pseudo_gradient"]["weight"].zero_()
+        torch.testing.assert_close(snapshot.pseudo_gradient["weight"], torch.tensor([0.1]))
         self.assertEqual(metadata_from_wire(asdict(self.learner.metadata())), self.learner.metadata())
 
     def test_actual_tcp_frame_roundtrip_and_wire_byte_counters(self):
@@ -128,7 +129,7 @@ class TransportTests(unittest.TestCase):
         body = {"request_id": "0", "snapshot": snapshot_to_wire(local.result())}
         self.worker.send("snapshot", body)
         self.pump_until(future.done)
-        torch.testing.assert_close(future.result().pseudo_gradient()["weight"], torch.tensor([0.1]))
+        torch.testing.assert_close(future.result().pseudo_gradient["weight"], torch.tensor([0.1]))
         self.assertTrue(self.remote.release_snapshot("0"))
         release = _wait(self.worker.receive)
         self.assertEqual(release["kind"], "release")

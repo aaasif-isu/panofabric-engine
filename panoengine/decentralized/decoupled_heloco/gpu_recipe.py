@@ -71,8 +71,6 @@ def validate_dense_options(options):
     """Recipe restrictions shared by decoupled and matched baseline runs."""
     if options.gpus_per_island != 1:
         raise ConfigError("Phase 7 supports one dense GPU per island; FSDP integration is pending")
-    if (options.module, options.config) != ("models.llama3_small", "llama3_15m"):
-        raise ConfigError("Phase 7 supports models.llama3_small / llama3_15m only")
     if options.data_distribution not in {"iid", "non_iid", "both"}:
         raise ConfigError("data_distribution must be iid, non_iid, or both")
     if options.data_distribution in {"non_iid", "both"} and not options.languages:
@@ -111,7 +109,6 @@ def build_recipe(options, repo_root, dump_folder, *, learner_id=None, experiment
     from torchtitan.components.checkpointer import CheckpointManager
     from torchtitan.components.optimizer import OptimizersContainer
     from torchtitan.trainer import Trainer
-    from models.llama3_small import model_registry
 
     arguments = [
         "--module", options.module, "--config", options.config,
@@ -136,9 +133,8 @@ def build_recipe(options, repo_root, dump_folder, *, learner_id=None, experiment
     # Construct base Trainer explicitly: the selected registry normally owns
     # a FaultTolerantTrainer.Config, whose build() would enter the old FT plane.
     cfg = Trainer.Config(**{field.name: getattr(recipe, field.name) for field in fields(Trainer.Config)})
-    # Keep the preset's document-aware FlexAttention. The pinned language
-    # model APIs explicitly reject SDPA because it loses document boundaries.
-    cfg.model_spec = model_registry("15M", attn_backend="flex")
+    
+    cfg.model_spec = recipe.model_spec
     cfg.model_spec.parallelize_fn = dense_parallelize
     cfg.training.disable_cuda_graphs = True
     cfg.training.dtype = "float32"

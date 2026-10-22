@@ -43,12 +43,33 @@ class Trajectory:
         if not self.enabled or (not (force or final) and (self.last == step or step % self.every)):
             return
         wall, cpu = time.perf_counter(), time.thread_time()
-        parameters = provider()
+        
+        final_flag = final or (force and (step != 0 or tokens != 0))
+        elapsed = 0.0 if step == 0 and not final_flag else time.monotonic() - self.origin
+        payload = {'step':step, 'processed_tokens':tokens, 'elapsed_s':elapsed, 'kind':self.kind,
+                   'snapshot_event': 'final' if final_flag else ('initial' if step == 0 else 'interval')}
+        clock_provider = getattr(self, "clock_provider", None)
+        if clock_provider is not None:
+            payload['syncer_step'] = clock_provider()
+            
+        suffix = '-final' if final_flag else ''
+        destination_path = str(self.folder / 'trajectory' / f'{step:08d}{suffix}.pt')
+        
+        try:
+            result = provider(destination_path=destination_path, metadata_payload=payload)
+            if result is not True:
+                payload['parameters'] = {n:p.detach().cpu().clone() for n,p in result.items()}
+                torch.save(payload, destination_path)
+        except TypeError:
+            parameters = provider()
+            payload['parameters'] = {n:p.detach().cpu().clone() for n,p in parameters.items()}
+            torch.save(payload, destination_path)
+
+        self.last = step
         duration, cpu_duration = time.perf_counter()-wall, time.thread_time()-cpu
         self.overhead_s += duration
         self.local.wall = getattr(self.local, "wall", 0.0) + duration
         self.local.cpu = getattr(self.local, "cpu", 0.0) + cpu_duration
-        self.save(step, parameters, tokens=tokens, force=force, final=final)
 
     def save(self, step, parameters, *, tokens=0, force=False, final=False):
         if not self.enabled or (not (force or final) and (self.last == step or step % self.every)):

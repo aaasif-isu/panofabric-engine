@@ -8,13 +8,22 @@ run:
   - 1
   - 2
   - 3
-  module: models.llama3_small
-  config: llama3_15m
-  hf_assets: ./assets/tokenizer/debug
-  dataset: c4
-  steps: 40
+  # --- Llama 15M Configuration (Uncomment to use) ---
+  # module: models.llama3_small
+  # config: llama3_15m
+  # hf_assets: ./assets/tokenizer/debug
+  # seq_len: 512
+  # batch: 1
+
+  # --- Qwen3-0.6B Configuration (Currently Active) ---
+  module: models.qwen3
+  config: qwen3_0_6b
+  hf_assets: ./assets/hf/Qwen3-0.6B
   seq_len: 512
   batch: 1
+
+  dataset: c4
+  steps: 40
   tokens_per_parameter: null
   seed: 42
   data_distribution: iid

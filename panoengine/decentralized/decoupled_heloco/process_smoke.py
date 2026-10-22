@@ -115,6 +115,11 @@ def _learner_process(address, token, learner_id, config, timeout):
         if message["kind"] != "initialize":
             raise ValueError("expected global initialization before training")
         model = _TinyTokenModel(config.decoupled.num_fragments)
+        import io
+        import torch
+        from panoengine.decentralized.decoupled_heloco.transport import extract_tensors
+        tensors = []
+        body_safe = extract_tensors({"parameters": message["body"]["parameters"]}, tensors)
         model.load_state_dict(message["body"]["parameters"])
         learner = DecoupledLearner(model, config.decoupled.num_fragments, learner_id=learner_id, max_snapshot_requests=config.decoupled.max_inflight_captures)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)

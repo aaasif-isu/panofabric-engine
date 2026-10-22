@@ -23,7 +23,12 @@ class FragmentSGD:
     def snapshot(self, fragment_id: int) -> dict[str, torch.Tensor]:
         return {name: tensor.clone() for name, tensor in self.manager.select(fragment_id, self._parameters).items()}
 
-    def model_snapshot(self) -> dict[str, torch.Tensor]:
+    def model_snapshot(self, destination_path=None, metadata_payload=None) -> dict[str, torch.Tensor] | bool:
+        if destination_path is not None:
+            payload = metadata_payload or {}
+            payload['parameters'] = self._parameters
+            torch.save(payload, destination_path)
+            return True
         return {name: tensor.clone() for name, tensor in self._parameters.items()}
 
     def dispatch_snapshot(self, fragment_id):

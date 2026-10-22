@@ -27,18 +27,50 @@ from .state import FragmentMetadata, FragmentSnapshot
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 
-def encode_message(kind: str, body: dict) -> bytes:
+def extract_tensors(obj, tensors):
+    if isinstance(obj, dict):
+        return {k: extract_tensors(v, tensors) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [extract_tensors(v, tensors) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(extract_tensors(v, tensors) for v in obj)
+    elif isinstance(obj, torch.Tensor):
+        obj = obj.detach().cpu().contiguous()
+        tensors.append(obj)
+        return {"__tensor_index__": len(tensors) - 1, "shape": list(obj.shape), "dtype": str(obj.dtype)}
+    else:
+        return obj
+
+
+def inject_tensors(obj, tensors):
+    if isinstance(obj, dict):
+        if "__tensor_index__" in obj:
+            return tensors[obj["__tensor_index__"]]
+        return {k: inject_tensors(v, tensors) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [inject_tensors(v, tensors) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(inject_tensors(v, tensors) for v in obj)
+    else:
+        return obj
+
+
+def encode_message(kind: str, body: dict) -> tuple[bytes, list[torch.Tensor]]:
     if not isinstance(kind, str) or not isinstance(body, dict):
         raise ValueError("wire message requires a string kind and dictionary body")
+    tensors = []
+    body_safe = extract_tensors(body, tensors)
     stream = io.BytesIO()
-    torch.save({"version": 1, "kind": kind, "body": body}, stream)
+    torch.save({"version": 1, "kind": kind, "body": body_safe}, stream)
     payload = stream.getvalue()
     if not 0 < len(payload) <= MAX_FRAME_BYTES:
         raise ValueError("wire message exceeds the frame limit")
-    return payload
+    return payload, tensors
 
 
-def decode_message(payload: bytes) -> dict:
+def decode_message(payload: bytes, tensors: list[torch.Tensor] | None = None) -> dict:
+    if tensors is None:
+        tensors = []
     if not 0 < len(payload) <= MAX_FRAME_BYTES:
         raise ValueError("invalid wire frame length")
     message = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=True)
@@ -48,6 +80,7 @@ def decode_message(payload: bytes) -> dict:
         or not isinstance(message["kind"], str) or not isinstance(message["body"], dict)
     ):
         raise ValueError("invalid or unsupported wire message")
+    message["body"] = inject_tensors(message["body"], tensors)
     return message
 
 
@@ -239,8 +272,68 @@ class FramedTransport:
                 size = struct.unpack("!I", header)[0]
                 if not 0 < size <= MAX_FRAME_BYTES:
                     raise ValueError("invalid wire frame length")
-                message = decode_message(self._read_exact(size))
+                payload = self._read_exact(size)
                 self.received_bytes += 4 + size
+
+                tensor_count_header = self._read_exact(4)
+                num_tensors = struct.unpack("!I", tensor_count_header)[0]
+                self.received_bytes += 4
+
+                message_temp = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=True)
+                tensor_infos = []
+                def count_tensors(obj):
+                    if isinstance(obj, dict):
+                        if "__tensor_index__" in obj:
+                            tensor_infos.append(obj)
+                            return
+                        for v in obj.values(): count_tensors(v)
+                    elif isinstance(obj, (list, tuple)):
+                        for v in obj: count_tensors(v)
+                count_tensors(message_temp["body"])
+                tensor_infos.sort(key=lambda x: x["__tensor_index__"])
+
+                if len(tensor_infos) != num_tensors:
+                    raise ValueError("tensor count mismatch")
+
+                tensors = []
+                for t_info in tensor_infos:
+                    t_size_header = self._read_exact(4)
+                    t_size = struct.unpack("!I", t_size_header)[0]
+                    self.received_bytes += 4
+
+                    shape = tuple(t_info["shape"])
+                    dtype_str = t_info["dtype"]
+                    dtype = getattr(torch, dtype_str.split('.')[-1])
+                    tensor = torch.empty(shape, dtype=dtype, device='cpu')
+                    
+                    bytes_read = 0
+                    view = tensor.view(torch.uint8).numpy()
+                    data_view = memoryview(view).cast('B')
+                    
+                    if t_size != len(data_view):
+                        raise ValueError(f"tensor size mismatch in stream: {t_size} != {len(data_view)} (shape {shape}, dtype {dtype}, message kind: {message_temp['kind']})")
+                    
+                    while bytes_read < t_size and not self._closed.is_set():
+                        try:
+                            chunk_size = min(t_size - bytes_read, 256 * 1024)
+                            received = self.socket.recv_into(data_view[bytes_read:bytes_read+chunk_size], chunk_size)
+                        except socket.timeout:
+                            continue
+                        if not received:
+                            raise EOFError("peer disconnected")
+                        try:
+                            from panoengine.decentralized.bandwidth import get_monitor
+                            monitor = get_monitor()
+                            if monitor:
+                                monitor.record("upload", received)
+                        except ImportError:
+                            pass
+                        bytes_read += received
+                        self.received_bytes += received
+                        
+                    tensors.append(tensor)
+
+                message = decode_message(payload, tensors)
                 while not self._closed.is_set():
                     try:
                         self._incoming.put(message, timeout=.05)
@@ -264,10 +357,10 @@ class FramedTransport:
                     continue
                 try:
                     started = time.monotonic()
-                    payload = encode_message(kind, body)
+                    payload, tensors = encode_message(kind, body)
                     self._stats["encode_seconds"] += time.monotonic() - started
                     started = time.monotonic()
-                    frame = memoryview(struct.pack("!I", len(payload)) + payload)
+                    frame = memoryview(struct.pack("!I", len(payload)) + payload + struct.pack("!I", len(tensors)))
                     while frame and not self._closed.is_set():
                         try:
                             chunk_size = min(len(frame), 256 * 1024)
@@ -279,8 +372,37 @@ class FramedTransport:
                         if monitor:
                             monitor.record("download", sent)
                         frame = frame[sent:]
+                        self.sent_bytes += sent
+                        
+                    for t in tensors:
+                        view = t.view(torch.uint8).numpy()
+                        data_view = memoryview(view).cast('B')
+                        
+                        header = memoryview(struct.pack("!I", len(data_view)))
+                        while header and not self._closed.is_set():
+                            try:
+                                sent = self.socket.send(header)
+                            except socket.timeout:
+                                continue
+                            if not sent:
+                                raise EOFError("peer disconnected")
+                            header = header[sent:]
+                            self.sent_bytes += sent
+                        
+                        while data_view and not self._closed.is_set():
+                            try:
+                                chunk_size = min(len(data_view), 256 * 1024)
+                                sent = self.socket.send(data_view[:chunk_size])
+                            except socket.timeout:
+                                continue
+                            if not sent:
+                                raise EOFError("peer disconnected while sending")
+                            if monitor:
+                                monitor.record("download", sent)
+                            data_view = data_view[sent:]
+                            self.sent_bytes += sent
+                            
                     self._stats["send_seconds"] += time.monotonic() - started
-                    self.sent_bytes += 4 + len(payload)
                 except Exception as exc:
                     self._fail(exc)
                     return

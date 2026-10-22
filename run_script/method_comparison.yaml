@@ -1,20 +1,30 @@
 # Train sequentially, then evaluate on the same frozen held-out batches.
 # Choose any nonempty subset of these five names; duplicates are rejected.
-method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
-#method_run: [decoupled_heloco, decoupled_diloco]
+#method_run: [decoupled_heloco, decoupled_diloco, heloco, diloco, mla]
+method_run: [decoupled_heloco, decoupled_diloco]
 
 run:
   islands: 4                   # Independent learners; one learner per GPU here.
   gpus_per_island: 1           # Current comparison supports exactly 1.
   gpus: [0, 1, 2, 3]          # Distinct GPU IDs visible to this job.
-  module: models.llama3_small  # Current dense comparison supports this module.
-  config: llama3_15m           # Current dense comparison supports this model.
-  hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
+  # --- Llama 15M Configuration (Currently Active) ---
+  # module: models.llama3_small  # Current dense comparison supports this module.
+  # config: llama3_15m           # Current dense comparison supports this model.
+  # hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
+  # seq_len: 512                # Training sequence length; positive integer.
+  # batch: 1                    # Training batch size per learner; positive integer.
+
+  # --- Qwen3-0.6B Configuration (Uncomment to use) ---
+  module: models.qwen3
+  config: qwen3_0_6b
+  hf_assets: ./assets/tokenizer/debug 
+  #hf_assets: ./assets/hf/Qwen3-0.6B
+  seq_len: 512
+  batch: 1
+
   dataset: c4                 # Supported: c4 or local c4_test.
   steps: 100000               # Optimizer steps PER learner, PER method. Under `stopping: time`, this must be large enough to not limit training prematurely.
                               # Whole-model baselines require steps % sync_steps == 0.
-  seq_len: 512                # Training sequence length; positive integer.
-  batch: 1                    # Training batch size per learner; positive integer.
   tokens_per_parameter: null   # Keep null: comparison requires fixed run.steps.
   seed: 42                    # Shared initialization/data seed.
   data_distribution: non_iid      # Current comparison supports iid or non_iid
@@ -51,7 +61,7 @@ decoupled:
   max_inflight_captures: 2    # UPDATED: 1=serial; integer 2..num_fragments=pipeline.
                               # Distinct fragments overlap; commits stay ordered.
                               # More in-flight snapshots consume more memory.
-  syncer_shards: 4            # UPDATED: 4 persistent CPU replicas for 4 learners.
+  syncer_shards: 1            # UPDATED: 4 persistent CPU replicas for 4 learners.
                               # 1=central optimizer; >1=same-host IPC all-reduce.
                               # Each replica holds full global weights/outer state.
   syncer_timeout: 60.0        # Positive replica startup/response/collective timeout.
@@ -88,7 +98,7 @@ decoupled:
   fragment_offsets: [0,1,2,3]      # null resolves to [0,1,2,3] when H=4.
                               # Or one distinct integer per fragment in [0,H).
                               # round_robin requires both H/offset fields to be null.
-  min_local_steps: 10       # Minimum local work since applying this fragment.
+  min_local_steps: 5       # Minimum local work since applying this fragment.
                               # null => paper_offsets:1; round_robin:overlap_steps.
                               # Explicit positive integer overrides either default.
 
@@ -127,7 +137,7 @@ decoupled:
 
 evaluation:
   enabled: true              # true/false; evaluate after sequential training.
-  batches: 100               # Held-out batch count; supported integer 1..10000.
+  batches: 20               # Held-out batch count; supported integer 1..10000.
   device: cuda:0             # Logical CUDA device; current comparison requires CUDA.
   validation_cache: null     # null freezes one shared held-out stream.
                               # Or a compatible validation_batches.pt file path.
@@ -135,10 +145,10 @@ evaluation:
   evaluate_trajectories: true # true/false; evaluate intermediate checkpoints if available.
 
 monitoring:
-  enabled: true              # true/false; trajectories and measured CPU resources.
-  global_every_updates: 10    # Export global snapshot every N committed outer updates.
+  enabled: false              # true/false; trajectories and measured CPU resources.
+  global_every_updates: 50    # Export global snapshot every N committed outer updates.
                               # N>=1; 1 records every update and adds snapshot IO.
-  learner_every_steps: 100    # Export each learner snapshot every N local steps; N>=1.
+  learner_every_steps: 500    # Export each learner snapshot every N local steps; N>=1.
   memory_sample_seconds: 0.1 # Positive coordinator RSS sampling interval.
                               # Replica self-sampling is currently fixed at 0.1s.
                               # Initial/final trajectory endpoints are also retained.

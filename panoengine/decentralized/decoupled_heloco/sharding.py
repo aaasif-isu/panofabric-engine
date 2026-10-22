@@ -276,8 +276,8 @@ class ShardedOptimizer:
     def momentum_snapshot(self, fragment_id):
         return self._read('momentum_snapshot', fragment_id)
 
-    def model_snapshot(self):
-        return self._read('model_snapshot')
+    def model_snapshot(self, destination_path=None, metadata_payload=None):
+        return self._read('model_snapshot', destination_path, metadata_payload)
 
     def close(self, *, force=False):
         if self._closed:

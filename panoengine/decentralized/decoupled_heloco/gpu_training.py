@@ -53,15 +53,6 @@ def select_devices(options, visible_devices, device_count):
 
 def validate_frame_sizes(model, count):
     manager = FragmentManager.from_model(model, count)
-    parameters = dict(model.named_parameters())
-    for fragment in manager.fragments:
-        # Snapshot contains two independent FP32 copies. Leave space for tensor
-        # names/storage metadata, then verify the actual serialized payload.
-        if fragment.numel * 8 + 65536 + len(fragment.parameter_names) * 1024 > MAX_FRAME_BYTES:
-            raise ConfigError("a fragment snapshot exceeds 32 MiB; increase decoupled.num_fragments (large-tensor chunking is pending)")
-        baseline = _cpu_copy(manager.select(fragment.fragment_id, parameters))
-        current = _cpu_copy(baseline)
-        encode_message("snapshot", {"request_id": "0", "snapshot": {"fragment_id": fragment.fragment_id, "layout_signature": manager.layout_signature, "base_revision": 0, "local_steps": 1, "tokens": 1, "baseline": baseline, "current": current}})
     return manager
 
 
