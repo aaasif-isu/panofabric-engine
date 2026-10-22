@@ -69,6 +69,7 @@ class TransportTests(unittest.TestCase):
             optimizer.step()
         snapshot = future.result()
         payload, tensors = encode_message("snapshot", snapshot_to_wire(snapshot))
+        tensors = [t.clone() for t in tensors]
         decoded = decode_message(payload, tensors)["body"]
         torch.testing.assert_close(decoded["pseudo_gradient"]["weight"], snapshot.pseudo_gradient["weight"], rtol=0, atol=0)
         decoded["pseudo_gradient"]["weight"].zero_()
@@ -77,7 +78,7 @@ class TransportTests(unittest.TestCase):
 
     def test_actual_tcp_frame_roundtrip_and_wire_byte_counters(self):
         parent, worker = self.pair()
-        parent.send("update", {"revision": 3, "tensor": torch.tensor([1.0, 2.0])})
+        parent.send("test_frame", {"revision": 3, "tensor": torch.tensor([1.0, 2.0])})
         message = _wait(worker.receive)
         self.assertEqual(message["body"]["revision"], 3)
         torch.testing.assert_close(message["body"]["tensor"], torch.tensor([1.0, 2.0]))
