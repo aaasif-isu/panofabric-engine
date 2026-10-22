@@ -26,18 +26,25 @@ class FlowControlTests(unittest.TestCase):
         self.assertEqual(out.peak, 3)
         self.assertEqual(out.coalesced, 2)
         self.assertEqual([out.get(.1) for _ in range(3)], [
-            ('snapshot', {'id': 1}), ('update_ack', {'id': 2}),
-            ('metadata', {'steps': 500})])
+            ('metadata', {'steps': 500}), ('snapshot', {'id': 1}),
+            ('update_ack', {'id': 2})])
         for _ in range(3): out.task_done()
         self.assertEqual(out.unfinished_tasks, 0)
 
     def test_slow_reader_survives_more_than_old_timeout(self):
         sender, receiver = self.pair(capacity=1)
         for number in range(3):
-            sender.send_reliable('snapshot', {'id': number}, deadline=time.monotonic()+3)
+            body = {
+                "request_id": str(number),
+                "snapshot": {
+                    "fragment_id": 0, "layout_signature": "sig", "base_revision": 0,
+                    "local_steps": 1, "tokens": 0, "pseudo_gradient": {}
+                }
+            }
+            sender.send_reliable('snapshot', body, deadline=time.monotonic()+3)
         # Old incoming.put(timeout=1) killed the reader here.
         time.sleep(1.2)
-        received = [_wait(receiver.receive, 3)['body']['id'] for _ in range(3)]
+        received = [int(_wait(receiver.receive, 3)['body']['request_id']) for _ in range(3)]
         self.assertEqual(received, [0, 1, 2])
         self.assertGreater(receiver.diagnostics()['incoming_full_retries'], 0)
         receiver.check()
@@ -47,12 +54,19 @@ class FlowControlTests(unittest.TestCase):
         entered, resume = threading.Event(), threading.Event()
         original = encode_message
         def slow(kind, body):
-            if kind == 'snapshot' and body.get('id') == 0:
+            if kind == 'snapshot_begin':
                 entered.set()
                 if not resume.wait(3): raise TimeoutError('test writer blocked')
             return original(kind, body)
         with patch('panoengine.decentralized.decoupled_heloco.transport.encode_message', slow):
-            sender.send('snapshot', {'id': 0})
+            body = {
+                "request_id": "0",
+                "snapshot": {
+                    "fragment_id": 0, "layout_signature": "sig", "base_revision": 0,
+                    "local_steps": 1, "tokens": 0, "pseudo_gradient": {}
+                }
+            }
+            sender.send('snapshot', body)
             self.assertTrue(entered.wait(2))
             sender.send('update_ack', {'id': 1})
             for step in range(500): sender.send_progress({'steps': step+1, 'tokens': (step+1)*512})
@@ -76,7 +90,14 @@ class FlowControlTests(unittest.TestCase):
         def produce():
             try:
                 for number in range(5):
-                    sender.send_reliable('snapshot', {'id': number, 'tensor': tensor}, deadline=time.monotonic()+10)
+                    body = {
+                        "request_id": str(number),
+                        "snapshot": {
+                            "fragment_id": 0, "layout_signature": "sig", "base_revision": 0,
+                            "local_steps": 1, "tokens": 0, "pseudo_gradient": {"tensor": tensor}
+                        }
+                    }
+                    sender.send_reliable('snapshot', body, deadline=time.monotonic()+10)
                 sender.flush(10)
             except Exception as exc:
                 failures.append(exc)
@@ -87,8 +108,8 @@ class FlowControlTests(unittest.TestCase):
         try:
             for number in range(5):
                 frame = _wait(receiver.receive, 5)
-                self.assertEqual(frame['body']['id'], number)
-                self.assertTrue(torch.equal(frame['body']['tensor'], tensor))
+                self.assertEqual(int(frame['body']['request_id']), number)
+                self.assertTrue(torch.equal(frame['body']['snapshot']['pseudo_gradient']['tensor'], tensor))
         finally:
             thread.join(10)
         self.assertFalse(thread.is_alive())

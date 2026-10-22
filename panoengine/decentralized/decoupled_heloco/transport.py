@@ -151,8 +151,9 @@ class _Outbox:
                 item, replaceable = self.control_items.popleft()
             else:
                 item, replaceable = self.bulk_items.popleft()
-                if not replaceable:
-                    self.required -= 1
+            
+            if not replaceable:
+                self.required -= 1
             self.condition.notify_all()
             return item
 
