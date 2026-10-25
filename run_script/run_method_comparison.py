@@ -674,7 +674,7 @@ def main(argv=None):
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--check-config", action="store_true", help="validate all methods; no Torch/CUDA imports or processes")
     actions.add_argument("--dry-run", action="store_true", help="print sequential routing without training")
-    parser.add_argument("--training-timeout", type=float, default=1800.0, help="deadline PER method, including startup/drain")
+    parser.add_argument("--training-timeout", type=float, default=172800.0, help="deadline PER method, including startup/drain")
     parser.add_argument("--output-dir", type=Path, help="new comparison directory; refuses to overwrite")
     args = parser.parse_args(argv)
     try:

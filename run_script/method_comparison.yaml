@@ -7,18 +7,28 @@ run:
   islands: 4                   # Independent learners; one learner per GPU here.
   gpus_per_island: 1           # Current comparison supports exactly 1.
   gpus: [0, 1, 2, 3]          # Distinct GPU IDs visible to this job.
-  # --- Llama 15M Configuration (Currently Active) ---
+
+  # # --- Llama 15M Configuration (Currently Active) ---
   # module: models.llama3_small  # Current dense comparison supports this module.
   # config: llama3_15m           # Current dense comparison supports this model.
   # hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
   # seq_len: 512                # Training sequence length; positive integer.
   # batch: 1                    # Training batch size per learner; positive integer.
 
-  # --- Qwen3-0.6B Configuration (Uncomment to use) ---
-  module: models.qwen3
-  config: qwen3_0_6b
+  # # --- Qwen3-0.6B Configuration (Uncomment to use) ---
+  # module: models.qwen3
+  # config: qwen3_0_6b #qwen3_0_6b, qwen3_1_7b
+  # hf_assets: ./assets/tokenizer/debug 
+  # #hf_assets: ./assets/hf/Qwen3-0.6B
+  # seq_len: 512
+  # batch: 1
+
+ # --- Gemma Configuration (Uncomment to use) ---
+  module: models.hf_transformers
+  config: gemma3_270m #gemma3_270m, gemma3_1b
+  #hf_assets: ./assets/hf/gemma3_270m
+  #hf_assets: ./assets/hf/gemma3_1b
   hf_assets: ./assets/tokenizer/debug 
-  #hf_assets: ./assets/hf/Qwen3-0.6B
   seq_len: 512
   batch: 1
 
@@ -30,6 +40,7 @@ run:
   data_distribution: non_iid      # Current comparison supports iid or non_iid
   languages: [en, fr, de, es]     # Language list for non-IID shards.
   island_slowness_factors: [1, 2, 3, 1]
+
                               # One factor per learner, each >= 1.
                               # 1: no added delay; 2/3: target 2x/3x step duration.
                               # Homogeneous alternative: [1, 1, 1, 1].
@@ -98,7 +109,7 @@ decoupled:
   fragment_offsets: [0,1,2,3]      # null resolves to [0,1,2,3] when H=4.
                               # Or one distinct integer per fragment in [0,H).
                               # round_robin requires both H/offset fields to be null.
-  min_local_steps: 5       # Minimum local work since applying this fragment.
+  min_local_steps: 10       # Minimum local work since applying this fragment.
                               # null => paper_offsets:1; round_robin:overlap_steps.
                               # Explicit positive integer overrides either default.
 
@@ -115,8 +126,8 @@ decoupled:
   timing_ema_alpha: 0.2       # (0,1]; smoothing of timing estimates.
                               # Larger values react faster to recent measurements.
 
-  rebase: true               # Optional Rebase-and-Ledger feature: preserve local displacement.
-  ledger: true               # Ledger preserves unconsumed local step/token progress across revisions.
+  rebase: false               # Optional Rebase-and-Ledger feature: preserve local displacement.
+  ledger: false               # Ledger preserves unconsumed local step/token progress across revisions.
 
   # Used only by decoupled_heloco; ignored by decoupled_diloco.
   heloco:

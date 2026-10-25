@@ -132,7 +132,13 @@ def build_recipe(options, repo_root, dump_folder, *, learner_id=None, experiment
         raise ConfigError("recipe did not select the plain optimizer with TorchFT disabled")
     # Construct base Trainer explicitly: the selected registry normally owns
     # a FaultTolerantTrainer.Config, whose build() would enter the old FT plane.
-    cfg = Trainer.Config(**{field.name: getattr(recipe, field.name) for field in fields(Trainer.Config)})
+    from dataclasses import dataclass
+    @dataclass(kw_only=True)
+    class _DecoupledConfig(Trainer.Config):
+        hf_model: str = ""
+    
+    cfg = _DecoupledConfig(**{field.name: getattr(recipe, field.name) for field in fields(Trainer.Config)})
+    cfg.hf_model = getattr(recipe, "hf_model", "")
     
     cfg.model_spec = recipe.model_spec
     cfg.model_spec.parallelize_fn = dense_parallelize
@@ -157,4 +163,5 @@ def build_recipe(options, repo_root, dump_folder, *, learner_id=None, experiment
     configure_clock_learning_rate(cfg, experiment_config)
     if learner_id is not None:
         cfg.dataloader = IslandDataLoaderConfig(cfg.dataloader, options.islands, learner_id)
+    cfg.model_spec.model.update_from_config(config=cfg)
     return cfg
