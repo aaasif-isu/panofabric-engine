@@ -8,29 +8,29 @@ run:
   gpus_per_island: 1           # Current comparison supports exactly 1.
   gpus: [0, 1, 2, 3]          # Distinct GPU IDs visible to this job.
 
-  # # --- Llama 15M Configuration (Currently Active) ---
-  # module: models.llama3_small  # Current dense comparison supports this module.
-  # config: llama3_15m           # Current dense comparison supports this model.
-  # hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
-  # seq_len: 512                # Training sequence length; positive integer.
-  # batch: 1                    # Training batch size per learner; positive integer.
+  # --- Llama 15M Configuration (Currently Active) ---
+  module: models.llama3_small  # Current dense comparison supports this module.
+  config: llama3_1b           # llama3_1b , llama3_15m, Current dense comparison supports this model.
+  hf_assets: ./assets/tokenizer/debug  # Compatible tokenizer assets directory.
+  seq_len: 512                # Training sequence length; positive integer.
+  batch: 1                    # Training batch size per learner; positive integer.
 
   # # --- Qwen3-0.6B Configuration (Uncomment to use) ---
   # module: models.qwen3
-  # config: qwen3_0_6b #qwen3_0_6b, qwen3_1_7b
+  # config: qwen3_1_7b #qwen3_0_6b, qwen3_1_7b
   # hf_assets: ./assets/tokenizer/debug 
   # #hf_assets: ./assets/hf/Qwen3-0.6B
   # seq_len: 512
   # batch: 1
 
- # --- Gemma Configuration (Uncomment to use) ---
-  module: models.hf_transformers
-  config: gemma3_270m #gemma3_270m, gemma3_1b
-  #hf_assets: ./assets/hf/gemma3_270m
-  #hf_assets: ./assets/hf/gemma3_1b
-  hf_assets: ./assets/tokenizer/debug 
-  seq_len: 512
-  batch: 1
+#  # --- Gemma Configuration (Uncomment to use) ---
+#   module: models.hf_transformers
+#   config: gemma3_1b #gemma3_270m, gemma3_1b
+#   #hf_assets: ./assets/hf/gemma3_270m
+#   #hf_assets: ./assets/hf/gemma3_1b
+#   hf_assets: ./assets/tokenizer/debug 
+#   seq_len: 512
+#   batch: 1
 
   dataset: c4                 # Supported: c4 or local c4_test.
   steps: 100000               # Optimizer steps PER learner, PER method. Under `stopping: time`, this must be large enough to not limit training prematurely.

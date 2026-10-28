@@ -14,6 +14,12 @@ Lower panels:
 
 Input:
     <experiment_directory>/<method>/syncs.csv
+
+python experiment_fig/timeline_v2.py \
+  --on outputs/method_comparison/llama_15m_rl_true_adap_true_20261027T165227-7647ae \
+  --off outputs/method_comparison/llama_15m_rl_false_adap_true_20261027T162146-87d608 \
+  --method both \
+  --output experiment_fig/llama15m_timeline
 """
 
 import argparse

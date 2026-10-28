@@ -378,7 +378,7 @@ def run_comparison(comparison, repo_root, *, training_timeout=1800.0, output_dir
     train_cmd = [
         sys.executable, str(SCRIPT_DIR / "prepare_training_caches.py"),
         "--config-file", str(first_effective),
-        "--batches", "5000",
+        "--batches", "10000",
         "--output-dir", str(train_cache_dir)
     ]
     proc = subprocess.run(train_cmd, cwd=repo_root, capture_output=True, text=True)

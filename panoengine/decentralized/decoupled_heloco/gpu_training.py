@@ -325,7 +325,7 @@ def _run_training(config, options, model, devices, folder, timeout, repo_root, *
             pass
 
         _send_available(peers, "pause")
-        _pump_until(peers, processes, deadline, lambda: all(peer.paused for peer in peers if peer.available), min_quorum=d.min_quorum)
+        _pump_until(peers, processes, deadline, lambda: all(peer.paused or peer.stopped for peer in peers if peer.available), min_quorum=d.min_quorum)
         if not delivered(syncer, peers):
             raise RuntimeError("final fragment revisions were not applied by every learner")
         _send_available(peers, "stop")
